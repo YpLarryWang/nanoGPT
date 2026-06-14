@@ -1,6 +1,11 @@
 
 # nanoGPT
 
+---
+
+**My Note**: 
+nanoGPT commit: 3adf61e154c3fe3fca428ad6bc3818b27a3b8291
+
 ![nanoGPT](assets/nanogpt.jpg)
 
 
