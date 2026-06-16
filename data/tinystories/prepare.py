@@ -5,7 +5,7 @@ import os
 from tqdm import tqdm
 import numpy as np
 import tiktoken
-from datasets import load_dataset # huggingface datasets
+from datasets import load_dataset, DatasetDict # huggingface datasets and DatasetDict
 
 # number of workers in .map() call
 # good number to use is ~order number of cpu cores // 2
@@ -19,13 +19,13 @@ num_proc_load_dataset = num_proc
 enc = tiktoken.get_encoding("gpt2")
 
 if __name__ == '__main__':
-    # takes 54GB in huggingface .cache dir, about 8M documents (8,013,769)
     dataset = load_dataset("roneneldan/TinyStories", num_proc=num_proc_load_dataset)
     
     print(dataset['train'][0])
 
     # ts by default contains the 'train' and 'validation' splits, so no need to do train_test_split    
-    split_dataset = {'train': dataset['train'], 'val': dataset['validation']}
+    split_dataset = DatasetDict({'train': dataset['train'], 
+                                 'val': dataset['validation']})
 
     # this results in:
     # >>> split_dataset
@@ -49,7 +49,7 @@ if __name__ == '__main__':
         return out
 
     # tokenize the dataset
-    tokenized = dataset.map(
+    tokenized = split_dataset.map(
         process,
         remove_columns=['text'],
         desc="tokenizing the splits",
