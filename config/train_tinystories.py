@@ -36,3 +36,6 @@ warmup_iters = 100 # not super necessary potentially
 # on macbook also add
 # device = 'cpu'  # run on cpu only
 # compile = False # do not torch compile the model
+
+# save 2^n steps for dev-interp analysis
+save_iters = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1000, 2000, 4000]
