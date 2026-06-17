@@ -39,6 +39,7 @@ eval_iters = 200
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
+save_iters = []    # exact iters to archive a separate, weights-only checkpoint
 # wandb logging
 wandb_log = False # disabled by default
 wandb_project = 'owt'
@@ -100,6 +101,14 @@ else:
     ddp_world_size = 1
 tokens_per_iter = gradient_accumulation_steps * ddp_world_size * batch_size * block_size
 print(f"tokens per iteration will be: {tokens_per_iter:,}")
+
+# validate the checkpoint schedule up front
+save_iters_set = set(save_iters)
+if save_iters_set:
+    assert all(isinstance(i, int) and i >= 0 for i in save_iters_set), "save_iters: non-neg ints"
+    assert max(save_iters_set) <= max_iters, "a save_iter exceeds max_iters"
+    if master_process:
+        print(f"will archive {len(save_iters_set)} checkpoints at{sorted(save_iters_set)}")
 
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
@@ -252,6 +261,23 @@ t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
+
+# single place to write a checkpoint. weights_only=True drops the optimizer (from the series)
+def save_checkpoint(path: str, weights_only: bool = False, extra: dict = None):
+    ckpt = {
+        'model': raw_model.state_dict(),
+        'model_args': model_args,
+        'iter_num': iter_num,
+        'config': config
+    }
+    if not weights_only:
+        ckpt['optimizer'] = optimizer.state_dict()
+        ckpt['best_val_loss'] = best_val_loss
+    if extra:
+        ckpt.update(extra)
+    print(f"saving checkpoint -> {path}")
+    torch.save(ckpt, path)
+
 while True:
 
     # determine and set the learning rate for this iteration
@@ -286,6 +312,9 @@ while True:
                 torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
     if iter_num == 0 and eval_only:
         break
+    # archive a weights-only snapshot at the exact shceduled iters (incl. step 0)
+    if iter_num in save_iters_set and master_process:
+        save_checkpoint(os.path.join(out_dir, f"ckpt_{iter_num:06d}.pt"), weights_only=True)
 
     # forward backward update, with optional gradient accumulation to simulate larger batch size
     # and using the GradScaler if data type is float16
