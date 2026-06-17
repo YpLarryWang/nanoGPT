@@ -19,6 +19,7 @@ num_proc_load_dataset = num_proc
 enc = tiktoken.get_encoding("gpt2")
 
 if __name__ == '__main__':
+    # Expect train ≈ 474M, val ≈ 4.77M. (First run downloads + tokenizes ~2.1M stories
     dataset = load_dataset("roneneldan/TinyStories", num_proc=num_proc_load_dataset)
     
     print(dataset['train'][0])
