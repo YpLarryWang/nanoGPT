@@ -16,6 +16,7 @@ $ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123
 (If your cluster does not have Infiniband interconnect prepend NCCL_IB_DISABLE=1)
 """
 
+import json
 import os
 import time
 import math
@@ -223,6 +224,13 @@ if ddp:
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
 def estimate_loss():
+    """Estimate an arbitrarily accurate loss over either split using many batches.
+    
+    "Arbitrarily accurate" means: you can make the estimate as precise as you want simply by increasing eval_iters — there's no fixed ceiling on accuracy, you just trade compute for precision.
+
+    Returns:
+        dict: mean loss over `eval_iters` batches with keys `train` or `val`.
+    """
     out = {}
     model.eval()
     for split in ['train', 'val']:
@@ -363,6 +371,34 @@ while True:
     # termination conditions
     if iter_num > max_iters:
         break
+
+# final metrics + one-line experiment record (project ground-truth log)
+if master_process:  # only rank-0 writes, so a multi-GPU (DDP) run logs one line, not N.
+    final_metrics = estimate_loss()
+    record = {
+        'time': time.strftime('%Y-%m-%d %H:%M:%S'),
+        'run_name': wandb_run_name,
+        'dataset': dataset,
+        'n_layer': n_layer, 'n_head': n_head, 'n_embd': n_embd, 'block_size': block_size,
+        'params_M': round(raw_model.get_num_params() / 1e6, 2),
+        'batch_size': batch_size, 'grad_accum': gradient_accumulation_steps,
+        'tokens_per_iter': tokens_per_iter,
+        'max_iters': max_iters, 'final_iter': iter_num,
+        'total_tokens': iter_num * tokens_per_iter,
+        'learning_rate': learning_rate, 'min_lr': min_lr, 'warmup_iters': warmup_iters,
+        'train_loss': round(final_metrics['train'].item(), 4),  # losses are tensors — convert to plain floats so json.dumps works.
+        'val_loss': round(final_metrics['val'].item(), 4),
+        'best_val_loss': round(float(best_val_loss), 4),
+        'mfu': round(running_mfu, 4),
+        'wandb_id': wandb.run.id if wandb_log else None,
+    }
+    os.makedirs('results', exist_ok=True)
+    with open('results/experiments.jsonl', 'a') as f:        # APPEND by setting mode to 'a', never overwrite
+        f.write(json.dumps(record) + '\n')
+    print(f"logged run -> results/experiments.jsonl  (val_loss={record['val_loss']})")
+
+if wandb_log and master_process:
+    wandb.finish()                                            # mark the run 'finished', flush
 
 if ddp:
     destroy_process_group()
