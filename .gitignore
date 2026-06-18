@@ -13,3 +13,5 @@ venv/
 .claude/
 .agents/
 wandb/
+out*/
+*.log
