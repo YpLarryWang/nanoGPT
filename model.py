@@ -123,12 +123,12 @@ class SwiGLU(nn.Module):
     def __init__(self, config):
         super().__init__()
         #  hidden = 2/3 of 4n, snapped to a multiple of 64
-        hidden_size = int(2/3 * 4 * config.n_emb)
+        hidden_size = int(2/3 * 4 * config.n_embd)
         hidden_size = (hidden_size // 64) * 64
         # three Linears: c_gate, c_val (n→hidden), c_proj (hidden→n); + dropout
-        self.c_gate = nn.Linear(config.n_emb, hidden_size, bias=config.bias)
-        self.c_val = nn.Linear(config.n_emb, hidden_size, bias=config.bias)
-        self.c_proj = nn.Linear(hidden_size, config.n_emb, bias=config.bias)
+        self.c_gate = nn.Linear(config.n_embd, hidden_size, bias=config.bias)
+        self.c_val = nn.Linear(config.n_embd, hidden_size, bias=config.bias)
+        self.c_proj = nn.Linear(hidden_size, config.n_embd, bias=config.bias)
         self.dropout = nn.Dropout(config.dropout)
         
     def forward(self, input):
@@ -165,6 +165,7 @@ class GPTConfig:
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
     use_rmsnorm: bool = False # True = RMSNorm (Llama style), False = LayerNorm
+    use_swiglu: bool = False # True = SWIGLU (Llama style), False = MLP
 
 class GPT(nn.Module):
 

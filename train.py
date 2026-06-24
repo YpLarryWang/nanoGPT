@@ -57,6 +57,7 @@ n_embd = 768
 dropout = 0.0 # for pretraining 0 is good, for finetuning try 0.1+
 bias = False # do we use bias inside LayerNorm and Linear layers?
 use_rmsnorm=False
+use_swiglu=False
 # adamw optimizer
 learning_rate = 6e-4 # max learning rate
 max_iters = 600000 # total number of training iterations
@@ -155,8 +156,9 @@ if os.path.exists(meta_path):
     print(f"found vocab_size = {meta_vocab_size} (inside {meta_path})")
 
 # model init
-model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, block_size=block_size,
-                  bias=bias, use_rmsnorm=use_rmsnorm,
+model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, 
+                  block_size=block_size, bias=bias, 
+                  use_rmsnorm=use_rmsnorm, use_swiglu=use_swiglu,
                   vocab_size=None, dropout=dropout) # start with model_args from command line
 if init_from == 'scratch':
     # init a new model from scratch

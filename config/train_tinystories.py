@@ -25,6 +25,7 @@ n_embd = 512
 dropout = 0.0      # pretraining: keep 0 
 bias: bool = False
 use_rmsnorm: bool = False
+use_swiglu: bool = False
 
 learning_rate = 6e-4
 max_iters = 6000

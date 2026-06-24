@@ -4,7 +4,13 @@
 ---
 
 **My Note**: 
+
 nanoGPT commit: 3adf61e154c3fe3fca428ad6bc3818b27a3b8291
+
+Smoke test command:
+```
+python train.py config/train_tinystories.py --use_rmsnorm=True --bias=False --use_swiglu=True --out_dir=out-ts-smoke --wandb_log=False
+```
 
 ![nanoGPT](assets/nanogpt.jpg)
 
