@@ -313,7 +313,7 @@ class GPT(nn.Module):
         return optimizer
 
     def estimate_mfu(self, fwdbwd_per_iter, dt):
-        """ estimate model flops utilization (MFU) in units of A100 bfloat16 peak FLOPS """
+        """ estimate model flops utilization (MFU) in units of the current GPU's bfloat16 peak FLOPS """
         # first estimate the number of flops we do per iteration.
         # see PaLM paper Appendix B as ref: https://arxiv.org/abs/2204.02311
         N = self.get_num_params()
@@ -322,9 +322,22 @@ class GPT(nn.Module):
         flops_per_token = 6*N + 12*L*H*Q*T
         flops_per_fwdbwd = flops_per_token * T
         flops_per_iter = flops_per_fwdbwd * fwdbwd_per_iter
-        # express our flops throughput as ratio of A100 bfloat16 peak flops
+        # express our flops throughput as ratio of the current GPU's bf16 peak flops.
+        # peaks below are *dense* bf16 tensor-core TFLOPS with FP32 accumulation and NO 2:4
+        # sparsity -- the rate bf16 mixed-precision training can realistically reach. Marketing
+        # "Tensor TFLOPS" are 2x larger (FP16 accumulate) and/or 4x (also sparsity). Note the
+        # GeForce penalty: 3090/4090 run FP16-with-FP32-accumulate at HALF rate, while the
+        # pro/datacenter A6000/A100 do not. refs: NVIDIA Ampere GA102 & Ada AD102 whitepapers.
         flops_achieved = flops_per_iter * (1.0/dt) # per second
-        flops_promised = 312e12 # A100 GPU bfloat16 peak flops is 312 TFLOPS
+        gpu_bf16_tflops = {
+            'A100':  312.0,   # dense bf16, fp32 accum (40/80GB);          624 w/ sparsity
+            'A6000': 154.8,   # GA102 pro, full-rate fp32 accum;           309.6 w/ sparsity
+            '3090':  71.0,    # GA102 GeForce, halved fp32 accum;          142 w/ fp16 accum
+            '4090':  165.2,   # AD102 GeForce, fp32 accum;                 330.3 w/ sparsity
+        }
+        name = torch.cuda.get_device_name(0) if torch.cuda.is_available() else ''
+        peak_tflops = next((v for k, v in gpu_bf16_tflops.items() if k in name), 312.0)
+        flops_promised = peak_tflops * 1e12 # bf16 peak for this GPU (default: A100 312 TFLOPS)
         mfu = flops_achieved / flops_promised
         return mfu
 
