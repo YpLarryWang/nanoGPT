@@ -15,6 +15,11 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+def make_norm(config):
+    if config.use_rmsnorm:
+        return RMSNorm(config.n_embd)
+    return LayerNorm(config.n_embd, bias=config.bias)
+
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
 
@@ -25,6 +30,23 @@ class LayerNorm(nn.Module):
 
     def forward(self, input):
         return F.layer_norm(input, self.weight.shape, self.weight, self.bias, 1e-5)
+    
+class RMSNorm(nn.Module):
+    """ RMSNorm: LayerNorm without mean-centering and without bias (Zhang & Sennrich 2019). """
+    def __init__(self, ndim, eps=1e-5):
+        super().__init__()
+        self.weight = nn.Parameter(torch.ones(ndim))   # the only learnable vector (γ)
+        self.eps = eps
+
+    def forward(self, input):
+        # TODO (1) RMS over the LAST dim, keepdim=True   (2) divide x by it   (3) scale by self.weight
+        # step 1: RMS over the LAST dim, keepdim=True
+        rms = torch.sqrt(input.pow(2).mean(dim=-1, keepdim=True) + self.eps)
+        # step 2: divide x by it
+        input = input / rms
+        # step 3: 
+        input = input * self.weight
+        return input
 
 class CausalSelfAttention(nn.Module):
 
@@ -95,9 +117,11 @@ class Block(nn.Module):
 
     def __init__(self, config):
         super().__init__()
-        self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
+        # self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
+        self.ln_1 = make_norm(config)
         self.attn = CausalSelfAttention(config)
-        self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
+        # self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
+        self.ln_2 = make_norm(config)
         self.mlp = MLP(config)
 
     def forward(self, x):
@@ -114,6 +138,7 @@ class GPTConfig:
     n_embd: int = 768
     dropout: float = 0.0
     bias: bool = True # True: bias in Linears and LayerNorms, like GPT-2. False: a bit better and faster
+    use_rmsnorm: bool = False # True = RMSNorm (Llama style), False = LayerNorm
 
 class GPT(nn.Module):
 
@@ -128,7 +153,8 @@ class GPT(nn.Module):
             wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
-            ln_f = LayerNorm(config.n_embd, bias=config.bias),
+            # ln_f = LayerNorm(config.n_embd, bias=config.bias),
+            ln_f = make_norm(config)
         ))
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
         # with weight tying when using torch.compile() some warnings get generated:

@@ -23,7 +23,8 @@ n_layer = 8
 n_head = 8
 n_embd = 512
 dropout = 0.0      # pretraining: keep 0 
-bias = False
+bias: bool = False
+use_rmsnorm: bool = False
 
 learning_rate = 6e-4
 max_iters = 6000
