@@ -20,6 +20,11 @@ def make_norm(config):
         return RMSNorm(config.n_embd)
     return LayerNorm(config.n_embd, bias=config.bias)
 
+def make_mlp(config):
+    if config.use_swiglu:
+        return SwiGLU(config)
+    return MLP(config)
+
 class LayerNorm(nn.Module):
     """ LayerNorm but with an optional bias. PyTorch doesn't support simply bias=False """
 
@@ -113,6 +118,26 @@ class MLP(nn.Module):
         x = self.dropout(x)
         return x
 
+class SwiGLU(nn.Module):
+    """ Gated MLP, SiLU gate (Shazeer 2020). Hidden ≈ 8n/3 to stay param-matched. """
+    def __init__(self, config):
+        super().__init__()
+        #  hidden = 2/3 of 4n, snapped to a multiple of 64
+        hidden_size = int(2/3 * 4 * config.n_emb)
+        hidden_size = (hidden_size // 64) * 64
+        # three Linears: c_gate, c_val (n→hidden), c_proj (hidden→n); + dropout
+        self.c_gate = nn.Linear(config.n_emb, hidden_size, bias=config.bias)
+        self.c_val = nn.Linear(config.n_emb, hidden_size, bias=config.bias)
+        self.c_proj = nn.Linear(hidden_size, config.n_emb, bias=config.bias)
+        self.dropout = nn.Dropout(config.dropout)
+        
+    def forward(self, input):
+        #  c_proj( SiLU(c_gate(x)) ⊙ c_val(x) ), then dropout
+        x = self.c_proj(F.silu(
+            self.c_gate(input)) * self.c_val(input) 
+        )
+        return self.dropout(x)
+
 class Block(nn.Module):
 
     def __init__(self, config):
@@ -122,7 +147,8 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(config)
         # self.ln_2 = LayerNorm(config.n_embd, bias=config.bias)
         self.ln_2 = make_norm(config)
-        self.mlp = MLP(config)
+        # self.mlp = MLP(config)
+        self.mlp = make_mlp(config)
 
     def forward(self, x):
         x = x + self.attn(self.ln_1(x))

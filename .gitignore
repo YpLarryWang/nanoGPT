@@ -15,3 +15,13 @@ venv/
 wandb/
 out*/
 *.log
+
+# --- BabyLM: keep only the core pipeline code (data/babylm/*.py) in git ---
+# tutorial scratch + lesson notes, and any local analysis dumps
+tutorials/
+analysis/
+# derived data artifacts (raw copies, cleaned text, trained tokenizer)
+# note: *.bin and *.pkl are already ignored globally above
+data/babylm/raw/
+data/babylm/clean/
+data/babylm/tokenizer/
