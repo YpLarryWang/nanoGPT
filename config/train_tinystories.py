@@ -11,7 +11,7 @@ always_save_checkpoint = False
 
 wandb_log = True # override via command line if you like
 wandb_project = 'tinystories'
-wandb_run_name = 'ts-50m-r1-0615'
+wandb_run_name = 'ts-smoke'
 
 dataset = 'tinystories'
 gradient_accumulation_steps = 8
@@ -32,6 +32,7 @@ lr_decay_iters = 6000 # make equal to max_iters usually
 min_lr = 6e-5
 beta2 = 0.95
 
+
 warmup_iters = 100 # not super necessary potentially
 
 # on macbook also add
@@ -39,4 +40,5 @@ warmup_iters = 100 # not super necessary potentially
 # compile = False # do not torch compile the model
 
 # save 2^n steps for dev-interp analysis
-save_iters = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1000, 2000, 4000]
+# save_iters = [0, 1, 2, 4, 8, 16, 32, 64, 128, 256, 512, 1000, 2000, 4000]
+save_iters = []
