@@ -7,10 +7,16 @@
 
 nanoGPT commit: 3adf61e154c3fe3fca428ad6bc3818b27a3b8291
 
-Smoke test command:
+Smoke test command (RMSNorm + SwiGLU; `compile=False` + tiny iter counts → starts in ~2s, finishes in <1 min, and writes a checkpoint as proof):
 ```
-python train.py config/train_tinystories.py --use_rmsnorm=True --bias=False --use_swiglu=True --out_dir=out-ts-smoke --wandb_log=False
+python train.py config/train_tinystories.py \
+  --use_rmsnorm=True --bias=False --use_swiglu=True \
+  --out_dir=out-ts-smoke --wandb_log=False --compile=False \
+  --max_iters=20 --lr_decay_iters=20 \
+  --eval_interval=10 --eval_iters=20 --log_interval=1 \
+  --always_save_checkpoint=True --save_iters="[]"
 ```
+Expect: `number of parameters: ~50.6M` (≈0.26M **under** the MLP arm → the ⅔ hidden-dim rule took effect; an ~8M jump would mean it didn't), finite `step 0` train/val losses, 20 logged steps, and `out-ts-smoke/ckpt.pt` saved at iter 10. For the real A/B runs, drop these overrides and use `--compile=True` (MFU) at the full `max_iters`.
 
 ![nanoGPT](assets/nanogpt.jpg)
 
