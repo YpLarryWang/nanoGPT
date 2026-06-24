@@ -7,16 +7,19 @@
 
 nanoGPT commit: 3adf61e154c3fe3fca428ad6bc3818b27a3b8291
 
-Smoke test command (RMSNorm + SwiGLU; `compile=False` + tiny iter counts → starts in ~2s, finishes in <1 min, and writes a checkpoint as proof):
+Smoke test command (RMSNorm + SwiGLU; tiny batch + `compile=False` so it fits any GPU, starts in ~2s, and saves a checkpoint as proof):
 ```
 python train.py config/train_tinystories.py \
   --use_rmsnorm=True --bias=False --use_swiglu=True \
   --out_dir=out-ts-smoke --wandb_log=False --compile=False \
+  --batch_size=8 --gradient_accumulation_steps=1 \
   --max_iters=20 --lr_decay_iters=20 \
   --eval_interval=10 --eval_iters=20 --log_interval=1 \
   --always_save_checkpoint=True --save_iters="[]"
 ```
-Expect: `number of parameters: ~50.6M` (≈0.26M **under** the MLP arm → the ⅔ hidden-dim rule took effect; an ~8M jump would mean it didn't), finite `step 0` train/val losses, 20 logged steps, and `out-ts-smoke/ckpt.pt` saved at iter 10. For the real A/B runs, drop these overrides and use `--compile=True` (MFU) at the full `max_iters`.
+Expect: `number of parameters: ~50.6M` (≈0.26M **under** the MLP arm → the ⅔ hidden-dim rule took effect; an ~8M jump would mean it didn't), finite `step 0` losses, 20 logged steps, and `out-ts-smoke/ckpt.pt` saved at iter 10.
+
+**Memory note (param-match ≠ memory-match):** the MLP baseline *fits* `batch_size=64 × block 512` on a 24 GB card (3090: full 6000 iters, mfu 0.675). **SwiGLU OOMs at batch 64** there — gating keeps ~4 live `(B,T,d)` activations for the backward (gate, SiLU, value, product) vs the MLP's ~2 `(B,T,4n)`, and `--compile=False` compounds it (no SiLU×multiply fusion). The failing 6.14 GiB allocation is the LM head's `B×T×vocab` fp32 logits-grad (identical for both archs) — SwiGLU is just the straw that overflows an already-marginal fit. For the real SwiGLU A/B on 24 GB use `--batch_size=16 --gradient_accumulation_steps=32 --compile=True` (same 262,144 tokens/iter as the batch-64 baselines → fair comparison), identical for both arms.
 
 ![nanoGPT](assets/nanogpt.jpg)
 
