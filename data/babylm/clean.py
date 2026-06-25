@@ -52,6 +52,9 @@ def normalize(s):
     s = _WS_RE.sub(" ", s).strip()
     return s
 
+def has_letters(line):
+    return any(c.isalpha() for c in line)
+
 # --------------------------------------------------------------------------- #
 # regexes -- THREE are given, TWO are yours to write (see Lesson 1)
 # --------------------------------------------------------------------------- #
@@ -75,8 +78,10 @@ _SWB_SPK = re.compile(r"^[AB]:\t")
 _INLINE_BRACKET = re.compile(r"\s*\[[^\]]*\]")
 
 # v2: italics and bold format
-_ITALICS = re.compile(r"_[^\_]*_")
-_BOLD = re.compile(r"=[^=]*=")
+# _ITALICS = re.compile(r"_[^_]*_")
+# _BOLD = re.compile(r"=[^=]*=")
+_ITALICS = re.compile(r"_([^_]*)_")
+_BOLD = re.compile(r"=([^=]*)=") # add capture group for both format to avoid loop in later replacement
 
 # --------------------------------------------------------------------------- #
 # per-source cleaners -- return cleaned line, or None to DROP it.
@@ -93,8 +98,8 @@ def clean_childes(line):
     if _CHILDES_TIER.match(line.strip()): return None # good practice is to drop annotation first
     if _BRACKET_ONLY.match(line.strip()): return None
     # TODO(v2): strip remaining inline CHAT codes ([//], [: x], [she]) with _INLINE_BRACKET
-    for ele in _INLINE_BRACKET.findall(line):
-        line = line.replace(ele, '')
+    line = _INLINE_BRACKET.sub("", line)
+    # if not has_letters(line): return None
     return line
 
 def clean_switchboard(line):
@@ -108,8 +113,8 @@ def clean_subtitles(line):
     # TODO(v2): remove song markers '♪' and inline caption spans ([bell rings])
     #   -- use _INLINE_BRACKET for captions; a caption-only line then drops to ""
     line = line.replace('♪', '')
-    for ele in _INLINE_BRACKET.findall(line):
-        line = line.replace(ele, '')
+    line = _INLINE_BRACKET.sub("", line)
+    # if not has_letters(line): return None
     return line
 
 def clean_wiki(line):
@@ -124,10 +129,8 @@ def clean_gutenberg(line):
     #   1. drop "= = = PGxxxxx = = =" book-id headers   (reuse _WIKI_HEADER -> None)  <-- FIRST
     #   2. strip _italics_ and =bold= emphasis markers  (remove '_' and '=' characters)
     if _WIKI_HEADER.match(line.strip()): return None
-    for ele in _ITALICS.findall(line):
-        line = line.replace(ele, ele[1:-1])
-    for ele in _BOLD.findall(line):
-        line = line.replace(ele, ele[1:-1])
+    line = _ITALICS.sub(r"\1", line)
+    line = _BOLD.sub(r"\1", line)
     return line
 
 def clean_passthrough(line):
@@ -148,6 +151,8 @@ def clean_line(source, raw):
     if line is None:
         return None
     line = normalize(line)
+    # if not has_letters(line):
+    #     return None
     return line or None
 
 # --------------------------------------------------------------------------- #
