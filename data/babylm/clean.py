@@ -56,16 +56,17 @@ def normalize(s):
 # regexes -- THREE are given, TWO are yours to write (see Lesson 1)
 # --------------------------------------------------------------------------- #
 _CHILDES_TIER = re.compile(r"^%[a-z]{2,4}:")            # %mor:  %gra:        [given]
-_BRACKET_ONLY = re.compile(r"^\[[^\]]*\]$")             # [leaves room.]      [given]
+_BRACKET_ONLY = re.compile(r"^\[[^\]]*\]$")             # [leaves room.]      [given] -- this means to match any number of char that is NOT right bracket
 _WIKI_HEADER  = re.compile(r"^(?:=\s)+(.*?)(?:\s=)+$")  # = = = Title = = =   [given]
 
-# TODO(you): a CHILDES speaker prefix at line start -- '*', 2-5 letters, ':', a TAB.
+# TODO: a CHILDES speaker prefix at line start -- '*', 2-5 letters, ':', a TAB.
 #   should match & strip:  "*CHI:\t"  "*MOT:\t"  "*COL:\t"
-_CHILDES_SPK = None   # = re.compile(r"...")
+# _CHILDES_SPK = re.compile(r"\*\w+:\t")
+_CHILDES_SPK = re.compile(r"^\*[A-Za-z]{2,5}:[ \t]+")
 
-# TODO(you): a Switchboard speaker prefix at line start -- one capital, ':', a TAB.
+# TODO: a Switchboard speaker prefix at line start -- one capital, ':', a TAB.
 #   should match & strip:  "A:\t"  "B:\t"
-_SWB_SPK = None       # = re.compile(r"...")
+_SWB_SPK = re.compile(r"^[AB]:\t")
 
 # --------------------------------------------------------------------------- #
 # per-source cleaners -- return cleaned line, or None to DROP it.
@@ -78,19 +79,27 @@ def clean_childes(line):
     #   2. strip a leading "*SPK:\t" prefix               -> _CHILDES_SPK.sub("", line)
     #   3. if what remains is ONLY a [bracketed] note     -> return None  (_BRACKET_ONLY on line.strip())
     #   4. otherwise return line
-    raise NotImplementedError("clean_childes -- see Lesson 1")
+    line = _CHILDES_SPK.sub("", line)
+    if _CHILDES_TIER.match(line.strip()): return None # good practice is to drop annotation first
+    if _BRACKET_ONLY.match(line.strip()): return None
+    return line
 
 def clean_switchboard(line):
-    # TODO(you): strip "A:\t"/"B:\t" (_SWB_SPK), drop bracket-only lines, else return line
-    raise NotImplementedError("clean_switchboard")
+    # TODO: strip "A:\t"/"B:\t" (_SWB_SPK), drop bracket-only lines, else return line
+    line = _SWB_SPK.sub("", line)
+    if _BRACKET_ONLY.match(line.strip()): return None
+    return line
 
 def clean_subtitles(line):
-    # TODO(you): OpenSubtitles ALL-CAPS is *format*, not meaningful case. One line.
-    raise NotImplementedError("clean_subtitles")
+    # TODO: OpenSubtitles ALL-CAPS is *format*, not meaningful case. One line.
+    return line.lower()
 
 def clean_wiki(line):
-    # TODO(you): unwrap "= = = Title = = =" -> "Title" with _WIKI_HEADER; else return line
-    raise NotImplementedError("clean_wiki")
+    # TODO: unwrap "= = = Title = = =" -> "Title" with _WIKI_HEADER; else return line
+    # if _WIKI_HEADER.match(line.strip()):
+    #     return _WIKI_HEADER.match(line.strip()).group(1)
+    if (m := _WIKI_HEADER.match(line.strip())): return m.group(1) # good practice is not to run the same code twices
+    return line
 
 def clean_passthrough(line):
     return line   # bnc_spoken / gutenberg: normalize() alone is enough  [given]
@@ -116,7 +125,8 @@ def clean_line(source, raw):
 # driver + residual-artifact report  [GIVEN -- always inspect your own output]
 # --------------------------------------------------------------------------- #
 _SUSPECT = {"tab": "\t", "bracket": "[", "star": "*",
-            "equals": "=", "angle": "<", "note": "♪", "underscore": "_"}
+            "equals": "=", "angle": "<", "note": "♪", 
+            "underscore": "_", "percent": "%"}
 
 def clean_one(raw_path, out_path, source):
     kept = dropped = allcaps = 0
