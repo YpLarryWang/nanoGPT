@@ -11,7 +11,7 @@ Smoke test command (RMSNorm + SwiGLU; tiny batch + `compile=False` so it fits an
 ```
 python train.py config/train_tinystories.py \
   --batch_size=32 --gradient_accumulation_steps=16 \
-  --use_rmsnorm=True --bias=False --use_swiglu=True \
+  --use_rmsnorm=True --bias=False --use_swiglu=True  --swiglu_mult=4.0 \
   --out_dir=out-ts-smoke --wandb_log=False --compile=False \
   --max_iters=2 --save_iters="[]"
 ```
