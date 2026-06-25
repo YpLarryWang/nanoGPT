@@ -1,7 +1,7 @@
 """
 BabyLM 2026 -- Stage 1: per-source text cleaning  [LESSON 1 SCAFFOLD].
 
->>> This is a fill-in-the-blanks scaffold. Find each "TODO(you)" and implement
+>>> This is a fill-in-the-blanks scaffold. Find each "TODO" and implement
 >>> the per-source cleaners + two regexes. Run the autograder until it's green:
 >>>     python tutorials/test_clean_on_samples.py
 >>> Lesson: tutorials/teach/lessons/0001-babylm-data-cleaning.html
@@ -59,14 +59,24 @@ _CHILDES_TIER = re.compile(r"^%[a-z]{2,4}:")            # %mor:  %gra:        [g
 _BRACKET_ONLY = re.compile(r"^\[[^\]]*\]$")             # [leaves room.]      [given] -- this means to match any number of char that is NOT right bracket
 _WIKI_HEADER  = re.compile(r"^(?:=\s)+(.*?)(?:\s=)+$")  # = = = Title = = =   [given]
 
-# TODO: a CHILDES speaker prefix at line start -- '*', 2-5 letters, ':', a TAB.
-#   should match & strip:  "*CHI:\t"  "*MOT:\t"  "*COL:\t"
-# _CHILDES_SPK = re.compile(r"\*\w+:\t")
-_CHILDES_SPK = re.compile(r"^\*[A-Za-z]{2,5}:[ \t]+")
+# v1 (worked, but the full corpus leaked 5,774 line-initial '*'):
+#     _CHILDES_SPK = re.compile(r"^\*[A-Za-z]{2,5}:[ \t]+")
+# TODO(v2): fix the two leak causes the residual report exposed --
+#   (a) numbered codes  "*SI1:" "*SI2:"  -> [A-Za-z] misses the digit  (allow 0-9)
+#   (b) bare empty codes "*MOT:"         -> [ \t]+ needs a separator   (make it optional)
+_CHILDES_SPK = re.compile(r"^\*[A-Za-z0-9]{2,5}:[ \t]*")
 
 # TODO: a Switchboard speaker prefix at line start -- one capital, ':', a TAB.
 #   should match & strip:  "A:\t"  "B:\t"
 _SWB_SPK = re.compile(r"^[AB]:\t")
+
+# v2 [given]: an inline annotation span to remove from WITHIN a line --
+#   childes "when he [she] naps" / subtitles "hi [bell rings]"  ->  the [..] (+ a leading space)
+_INLINE_BRACKET = re.compile(r"\s*\[[^\]]*\]")
+
+# v2: italics and bold format
+_ITALICS = re.compile(r"_[^\_]*_")
+_BOLD = re.compile(r"=[^=]*=")
 
 # --------------------------------------------------------------------------- #
 # per-source cleaners -- return cleaned line, or None to DROP it.
@@ -74,7 +84,7 @@ _SWB_SPK = re.compile(r"^[AB]:\t")
 # --------------------------------------------------------------------------- #
 
 def clean_childes(line):
-    # TODO(you) -- three moves, IN THIS ORDER:
+    # TODO -- three moves, IN THIS ORDER:
     #   1. if line is a %mor:/%gra: tier (_CHILDES_TIER)  -> return None
     #   2. strip a leading "*SPK:\t" prefix               -> _CHILDES_SPK.sub("", line)
     #   3. if what remains is ONLY a [bracketed] note     -> return None  (_BRACKET_ONLY on line.strip())
@@ -82,6 +92,9 @@ def clean_childes(line):
     line = _CHILDES_SPK.sub("", line)
     if _CHILDES_TIER.match(line.strip()): return None # good practice is to drop annotation first
     if _BRACKET_ONLY.match(line.strip()): return None
+    # TODO(v2): strip remaining inline CHAT codes ([//], [: x], [she]) with _INLINE_BRACKET
+    for ele in _INLINE_BRACKET.findall(line):
+        line = line.replace(ele, '')
     return line
 
 def clean_switchboard(line):
@@ -91,8 +104,13 @@ def clean_switchboard(line):
     return line
 
 def clean_subtitles(line):
-    # TODO: OpenSubtitles ALL-CAPS is *format*, not meaningful case. One line.
-    return line.lower()
+    line = line.lower()   # ALL-CAPS is format, not meaningful case
+    # TODO(v2): remove song markers '♪' and inline caption spans ([bell rings])
+    #   -- use _INLINE_BRACKET for captions; a caption-only line then drops to ""
+    line = line.replace('♪', '')
+    for ele in _INLINE_BRACKET.findall(line):
+        line = line.replace(ele, '')
+    return line
 
 def clean_wiki(line):
     # TODO: unwrap "= = = Title = = =" -> "Title" with _WIKI_HEADER; else return line
@@ -101,13 +119,24 @@ def clean_wiki(line):
     if (m := _WIKI_HEADER.match(line.strip())): return m.group(1) # good practice is not to run the same code twices
     return line
 
+def clean_gutenberg(line):
+    # TODO(v2): Project Gutenberg markup (residual: underscore=2563, equals=166, bracket=1189) --
+    #   1. drop "= = = PGxxxxx = = =" book-id headers   (reuse _WIKI_HEADER -> None)  <-- FIRST
+    #   2. strip _italics_ and =bold= emphasis markers  (remove '_' and '=' characters)
+    if _WIKI_HEADER.match(line.strip()): return None
+    for ele in _ITALICS.findall(line):
+        line = line.replace(ele, ele[1:-1])
+    for ele in _BOLD.findall(line):
+        line = line.replace(ele, ele[1:-1])
+    return line
+
 def clean_passthrough(line):
-    return line   # bnc_spoken / gutenberg: normalize() alone is enough  [given]
+    return line   # bnc_spoken: normalize() alone is enough  [given]
 
 CLEANERS = {
     "bnc_spoken": clean_passthrough,
     "childes": clean_childes,
-    "gutenberg": clean_passthrough,
+    "gutenberg": clean_gutenberg,
     "open_subtitles": clean_subtitles,
     "simple_wiki": clean_wiki,
     "switchboard": clean_switchboard,
