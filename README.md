@@ -9,7 +9,7 @@ nanoGPT commit: 3adf61e154c3fe3fca428ad6bc3818b27a3b8291
 
 Smoke test command (RMSNorm + SwiGLU; tiny batch + `compile=False` so it fits any GPU, starts in ~2s, and saves a checkpoint as proof):
 ```
-python train.py config/train_tinystories.py \
+CUDA_VISIBLE_DEVICES=1 python train.py config/train_tinystories.py \
   --batch_size=32 --gradient_accumulation_steps=16 \
   --use_rmsnorm=True --bias=False --use_swiglu=True  --swiglu_mult=4.0 \
   --out_dir=out-ts-smoke --wandb_log=False --compile=False \
@@ -32,11 +32,11 @@ Expect: `number of parameters: ~50.6M` (≈0.26M **under** the MLP arm → the �
 
 formal runs:
 ```
-CUDA_VISIBLE_DEVICES=0 nohup python train.py config/train_tinystories.py \
-    --use_rmsnorm=True --bias=False --use_swiglu=True \
+CUDA_VISIBLE_DEVICES=1 nohup python train.py config/train_tinystories.py \
+    --use_rmsnorm=True --bias=False --use_swiglu=True  --swiglu_mult=4.0 \
     --batch_size=32 --gradient_accumulation_steps=16 --compile=True \
-    --out_dir=out-ts-swiglu --wandb_run_name=ts-50m-rmsnorm-swiglu \
-    > /tmp/rms-swiglu-ts.log 2>&1 &
+    --out_dir=out-ts-swiglu4 --wandb_run_name=ts-50m-rmsnorm-swiglu-multi4 \
+    > /tmp/rms-swiglu4-ts.log 2>&1 &
 ```
 
 ![nanoGPT](assets/nanogpt.jpg)
