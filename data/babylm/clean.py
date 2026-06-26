@@ -55,6 +55,11 @@ def normalize(s):
 def has_letters_and_digits(line):
     return any(c.isalnum() for c in line)
 
+# Lesson 2: structural boundaries become this sentinel instead of being dropped.
+# prepare.py maps it to one <|endoftext|> special token, dedups runs, and inserts
+# it between the 6 sources. It survives normalize() and the alnum guard intact.
+EOT = "<|endoftext|>"
+
 # --------------------------------------------------------------------------- #
 # regexes -- THREE are given, TWO are yours to write (see Lesson 1)
 # --------------------------------------------------------------------------- #
@@ -98,7 +103,8 @@ def clean_childes(line):
     #   3. if what remains is ONLY a [bracketed] note     -> return None  (_BRACKET_ONLY on line.strip())
     #   4. otherwise return line
     line = _CHILDES_SPK.sub("", line)
-    if _WIKI_HEADER.match(line.strip()): return None
+    # TODO(L2): a `.cha` file header is a DOCUMENT boundary -> change this None to EOT
+    if _WIKI_HEADER.match(line.strip()): return "<|endoftext|>"
     if _CHILDES_TIER.match(line.strip()): return None # good practice is to drop annotation first
     if _BRACKET_ONLY.match(line.strip()): return None
     # TODO(v2): strip remaining inline CHAT codes ([//], [: x], [she]) with _INLINE_BRACKET
@@ -132,11 +138,12 @@ def clean_gutenberg(line):
     # TODO(v2): Project Gutenberg markup (residual: underscore=2563, equals=166, bracket=1189) --
     #   1. drop "= = = PGxxxxx = = =" book-id headers   (reuse _WIKI_HEADER -> None)  <-- FIRST
     #   2. strip _italics_ and =bold= emphasis markers  (remove '_' and '=' characters)
-    if _WIKI_HEADER.match(line.strip()): return None
+    # TODO(L2): PG book header & `* * *` scene break are BOUNDARIES -> change both Nones to EOT
+    if _WIKI_HEADER.match(line.strip()): return "<|endoftext|>"      # PG book boundary
     line = _INLINE_BRACKET.sub("", line)
     line = _ITALICS.sub(r"\1", line)
     line = _BOLD.sub(r"\1", line)
-    if _STAR_BREAK.match(line): return None
+    if _STAR_BREAK.match(line): return "<|endoftext|>"               # scene-break boundary
     line = _STAR_WRAPPED_LINE.sub(r"\1", line)
     return line
 
