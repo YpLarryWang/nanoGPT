@@ -52,8 +52,8 @@ def normalize(s):
     s = _WS_RE.sub(" ", s).strip()
     return s
 
-def has_letters(line):
-    return any(c.isalpha() for c in line)
+def has_letters_and_digits_and_digits(line):
+    return any(c.isalnum() for c in line)
 
 # --------------------------------------------------------------------------- #
 # regexes -- THREE are given, TWO are yours to write (see Lesson 1)
@@ -83,6 +83,9 @@ _INLINE_BRACKET = re.compile(r"\s*\[[^\]]*\]")
 _ITALICS = re.compile(r"_([^_]*)_")
 _BOLD = re.compile(r"=([^=]*)=") # add capture group for both format to avoid loop in later replacement
 
+_STAR_BREAK = re.compile(r"^\s*(?:\*\s*){2,}$")
+_STAR_WRAPPED_LINE = re.compile(r"^\s*\*([^*\n]*[A-Za-z][^*\n]*)\*\s*$")
+
 # --------------------------------------------------------------------------- #
 # per-source cleaners -- return cleaned line, or None to DROP it.
 # (these run BEFORE normalize(): strip structure first, then squeeze whitespace)
@@ -95,11 +98,12 @@ def clean_childes(line):
     #   3. if what remains is ONLY a [bracketed] note     -> return None  (_BRACKET_ONLY on line.strip())
     #   4. otherwise return line
     line = _CHILDES_SPK.sub("", line)
+    if _WIKI_HEADER.match(line.strip()): return None
     if _CHILDES_TIER.match(line.strip()): return None # good practice is to drop annotation first
     if _BRACKET_ONLY.match(line.strip()): return None
     # TODO(v2): strip remaining inline CHAT codes ([//], [: x], [she]) with _INLINE_BRACKET
     line = _INLINE_BRACKET.sub("", line)
-    # if not has_letters(line): return None
+    # if not has_letters_and_digits(line): return None
     return line
 
 def clean_switchboard(line):
@@ -114,7 +118,7 @@ def clean_subtitles(line):
     #   -- use _INLINE_BRACKET for captions; a caption-only line then drops to ""
     line = line.replace('♪', '')
     line = _INLINE_BRACKET.sub("", line)
-    # if not has_letters(line): return None
+    if not has_letters_and_digits(line): return None
     return line
 
 def clean_wiki(line):
@@ -129,8 +133,11 @@ def clean_gutenberg(line):
     #   1. drop "= = = PGxxxxx = = =" book-id headers   (reuse _WIKI_HEADER -> None)  <-- FIRST
     #   2. strip _italics_ and =bold= emphasis markers  (remove '_' and '=' characters)
     if _WIKI_HEADER.match(line.strip()): return None
+    line = _INLINE_BRACKET.sub("", line)
     line = _ITALICS.sub(r"\1", line)
     line = _BOLD.sub(r"\1", line)
+    if _STAR_BREAK.match(line): return None
+    line = _STAR_WRAPPED_LINE.sub(r"\1", line)
     return line
 
 def clean_passthrough(line):
@@ -151,8 +158,8 @@ def clean_line(source, raw):
     if line is None:
         return None
     line = normalize(line)
-    # if not has_letters(line):
-    #     return None
+    if not has_letters_and_digits(line):
+        return None
     return line or None
 
 # --------------------------------------------------------------------------- #
