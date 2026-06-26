@@ -52,7 +52,7 @@ def normalize(s):
     s = _WS_RE.sub(" ", s).strip()
     return s
 
-def has_letters_and_digits_and_digits(line):
+def has_letters_and_digits(line):
     return any(c.isalnum() for c in line)
 
 # --------------------------------------------------------------------------- #
