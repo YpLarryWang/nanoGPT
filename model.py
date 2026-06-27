@@ -53,6 +53,29 @@ class RMSNorm(nn.Module):
         input = input * self.weight
         return input
 
+def build_rope_cache(seq_len, head_dim, base=10000.0):
+    # TODO  inv_freq: 1 / base**(arange(0,head_dim,2)/head_dim)  → (head_dim/2,)
+    angular_velocity = 1 / (base ** (torch.arange(0, head_dim, 2).float() / head_dim))
+    # TODO  freqs = outer(arange(seq_len), inv_freq)              → (seq_len, head_dim/2)
+    angles = torch.outer(torch.arange(0, seq_len), angular_velocity)
+    # TODO  return cos, sin, each = cat([freqs, freqs]) then .cos()/.sin()  → (seq_len, head_dim)
+    cos = torch.cat([angles, angles], dim=-1).cos()
+    sin = torch.cat([angles, angles], dim=-1).sin()
+    return cos, sin
+    
+def rotate_half(x):
+    # TODO  split last dim in two halves x1,x2; return cat([-x2, x1])
+    x1, x2 = x.chunk(2, dim=-1)
+    return torch.cat([-x2, x1], dim=-1)
+    
+def apply_rope(x, cos, sin):
+    # TODO  T = x.size(2); do it in fp32; return (x*cos[:T] + rotate_half(x)*sin[:T]).to(x.dtype)
+    seq_len = x.size(2) # x is of size (bz, n_head, seq_len, d_head)
+    dtype = x.dtype
+    x = x.float()
+    pos_emb = x * cos[:seq_len, :] + rotate_half(x) * sin[:seq_len, :]
+    return pos_emb.to(dtype)
+
 class CausalSelfAttention(nn.Module):
 
     def __init__(self, config):
@@ -75,6 +98,13 @@ class CausalSelfAttention(nn.Module):
             # causal mask to ensure that attention is only applied to the left in the input sequence
             self.register_buffer("bias", torch.tril(torch.ones(config.block_size, config.block_size))
                                         .view(1, 1, config.block_size, config.block_size))
+        self.use_rope = config.use_rope
+        if self.use_rope:
+            head_dim = config.n_embd // config.n_head
+            assert head_dim % 2 == 0, "RoPE needs an even head_dim"
+            cos, sin = build_rope_cache(config.block_size, head_dim)
+            self.register_buffer('rope_cos', cos, persistent=False)
+            self.register_buffer('rope_sin', sin, persistent=False)
 
     def forward(self, x):
         B, T, C = x.size() # batch size, sequence length, embedding dimensionality (n_embd)
@@ -84,6 +114,10 @@ class CausalSelfAttention(nn.Module):
         k = k.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         q = q.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
         v = v.view(B, T, self.n_head, C // self.n_head).transpose(1, 2) # (B, nh, T, hs)
+
+        if self.use_rope:
+            q = apply_rope(q, self.rope_cos, self.rope_sin)
+            k = apply_rope(k, self.rope_cos, self.rope_sin)
 
         # causal self-attention; Self-attend: (B, nh, T, hs) x (B, nh, hs, T) -> (B, nh, T, T)
         if self.flash:
@@ -167,6 +201,7 @@ class GPTConfig:
     use_rmsnorm: bool = False # True = RMSNorm (Llama style), False = LayerNorm
     use_swiglu: bool = False # True = SWIGLU (Llama style), False = MLP
     swiglu_mult: float = 8/3
+    use_rope: bool = False
 
 class GPT(nn.Module):
 
@@ -178,7 +213,7 @@ class GPT(nn.Module):
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
-            wpe = nn.Embedding(config.block_size, config.n_embd),
+            # wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
             h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
             # ln_f = LayerNorm(config.n_embd, bias=config.bias),
@@ -190,6 +225,9 @@ class GPT(nn.Module):
         # This behavior is deprecated and will be an error in future versions"
         # not 100% sure what this is, so far seems to be harmless. TODO investigate
         self.transformer.wte.weight = self.lm_head.weight # https://paperswithcode.com/method/weight-tying
+        
+        if not config.use_rope:
+            self.transformer.wpe = nn.Embedding(config.block_size, config.n_embd)
 
         # init all weights
         self.apply(self._init_weights)
@@ -209,7 +247,7 @@ class GPT(nn.Module):
         params are actually used as weights in the final layer, so we include them.
         """
         n_params = sum(p.numel() for p in self.parameters())
-        if non_embedding:
+        if non_embedding and not self.config.use_rope:
             n_params -= self.transformer.wpe.weight.numel()
         return n_params
 
@@ -225,12 +263,15 @@ class GPT(nn.Module):
         device = idx.device
         b, t = idx.size()
         assert t <= self.config.block_size, f"Cannot forward sequence of length {t}, block size is only {self.config.block_size}"
-        pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
 
         # forward the GPT model itself
         tok_emb = self.transformer.wte(idx) # token embeddings of shape (b, t, n_embd)
-        pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
-        x = self.transformer.drop(tok_emb + pos_emb)
+        if self.config.use_rope:
+            x = self.transformer.drop(tok_emb)
+        else:
+            pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
+            pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
+            x = self.transformer.drop(tok_emb + pos_emb)
         for block in self.transformer.h:
             x = block(x)
         x = self.transformer.ln_f(x)
@@ -252,7 +293,8 @@ class GPT(nn.Module):
         # but want to use a smaller block size for some smaller, simpler model
         assert block_size <= self.config.block_size
         self.config.block_size = block_size
-        self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:block_size])
+        if not self.config.use_rope:
+            self.transformer.wpe.weight = nn.Parameter(self.transformer.wpe.weight[:block_size])
         for block in self.transformer.h:
             if hasattr(block.attn, 'bias'):
                 block.attn.bias = block.attn.bias[:,:,:block_size,:block_size]

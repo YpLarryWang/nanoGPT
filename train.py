@@ -59,6 +59,7 @@ bias = False # do we use bias inside LayerNorm and Linear layers?
 use_rmsnorm=False
 use_swiglu=False
 swiglu_mult=8/3
+use_rope=False
 
 # adamw optimizer
 learning_rate = 6e-4 # max learning rate
@@ -160,7 +161,7 @@ if os.path.exists(meta_path):
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, 
                   block_size=block_size, bias=bias, 
-                  use_rmsnorm=use_rmsnorm, use_swiglu=use_swiglu, swiglu_mult=swiglu_mult,
+                  use_rmsnorm=use_rmsnorm, use_swiglu=use_swiglu, swiglu_mult=swiglu_mult, use_rope=use_rope,
                   vocab_size=None, dropout=dropout) # start with model_args from command line
 if init_from == 'scratch':
     # init a new model from scratch
