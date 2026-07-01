@@ -8,6 +8,6 @@ bl100m-ln-mlp-learned,LN+MLP+learned,100M,33,71.3,55.0,54.6,28.2,54.9,52.79,,,ou
 bl100m-ln-swiglu-learned,LN+SwiGLU(8/3)+learned,100M,33,71.0,55.7,53.9,27.8,54.9,52.66,,,ours(measured)
 bl100m-rms-mlp-rope,RMS+MLP+RoPE,100M,33,71.5,58.9,53.0,25.3,54.6,52.65,,,ours(measured)
 bl100m-rms-swiglu-learned,RMS+SwiGLU(8/3)+learned,100M,33,70.8,56.0,53.5,23.9,54.8,51.81,,,ours(measured)
-Baseline-Strict,GPT-2 (official),100M,98,74.53,65.00,,23.58,55.85,,,,official-README(remeasuring)
+Baseline-Strict,GPT-2 (baseline),100M,98,74.73,65.00,54.37,23.58,55.85,54.71,10.54,3.32,ours(measured)
 bl10m-rms-swiglu-rope,RMS+SwiGLU(8/3)+RoPE,10M,33,62.16,51.14,48.73,19.65,51.00,46.54,0.16,0.01,ours(measured)
-Baseline-Strict-Small,GPT-2 (official),10M,98,65.08,57.25,,21.07,51.81,,,,official-README(remeasuring)
+Baseline-Strict-Small,GPT-2 (baseline),10M,98,65.23,57.25,50.63,21.07,51.81,49.20,9.63,1.64,ours(measured)
