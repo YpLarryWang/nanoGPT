@@ -1,0 +1,13 @@
+model,arch,train_words,params_M,blimp,supplement,ewok,entity_tracking,comps,avg5,reading_eye,reading_selfpaced,source
+bl100m-rms-swiglu-rope,RMS+SwiGLU(8/3)+RoPE,100M,33,72.2,58.5,54.3,31.2,54.7,54.17,0.24,0.10,ours(measured)
+bl100m-rms-mlp-learned,RMS+MLP+learned,100M,33,71.3,55.9,53.8,31.6,55.3,53.60,,,ours(measured)
+bl100m-ln-swiglu-rope,LN+SwiGLU(8/3)+RoPE,100M,33,72.3,58.2,53.2,28.7,55.1,53.50,,,ours(measured)
+bl100m-ln-mlp-rope,LN+MLP+RoPE,100M,33,71.5,57.5,54.5,28.6,54.6,53.35,,,ours(measured)
+bl100m-rms-swiglu4-rope,RMS+SwiGLU(4)+RoPE,100M,33,71.4,60.5,54.2,22.6,55.3,52.81,,,ours(measured)
+bl100m-ln-mlp-learned,LN+MLP+learned,100M,33,71.3,55.0,54.6,28.2,54.9,52.79,,,ours(measured)
+bl100m-ln-swiglu-learned,LN+SwiGLU(8/3)+learned,100M,33,71.0,55.7,53.9,27.8,54.9,52.66,,,ours(measured)
+bl100m-rms-mlp-rope,RMS+MLP+RoPE,100M,33,71.5,58.9,53.0,25.3,54.6,52.65,,,ours(measured)
+bl100m-rms-swiglu-learned,RMS+SwiGLU(8/3)+learned,100M,33,70.8,56.0,53.5,23.9,54.8,51.81,,,ours(measured)
+Baseline-Strict,GPT-2 (official),100M,98,74.53,65.00,,23.58,55.85,,,,official-README(remeasuring)
+bl10m-rms-swiglu-rope,RMS+SwiGLU(8/3)+RoPE,10M,33,62.16,51.14,48.73,19.65,51.00,46.54,0.16,0.01,ours(measured)
+Baseline-Strict-Small,GPT-2 (official),10M,98,65.08,57.25,,21.07,51.81,,,,official-README(remeasuring)
