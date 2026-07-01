@@ -28,6 +28,9 @@ done
 : "${PY:=$DATA/envs/babylm-eval/bin/python}"
 : "${HF_ROOT:=$DATA/hf-models}"
 
+# the pipeline's scripts invoke a bare `python`; point it at the eval venv
+export PATH="$(dirname "$PY"):$PATH"
+
 CKPT="$NANO_REPO/out-babylm/$VARIANT/ckpt.pt"
 [ -f "$CKPT" ] || { echo "no checkpoint: $CKPT" >&2; exit 1; }
 
@@ -44,16 +47,16 @@ echo ">> convert $VARIANT -> $HFDIR"
 cd "$EVAL_REPO"
 if [ "$FAST" = 1 ]; then
   echo ">> fast zero-shot"
-  bash eval_zero_shot_fast.sh "$HFDIR" main causal
+  bash scripts/eval_zero_shot_fast.sh "$HFDIR" main causal
 else
   echo ">> full zero-shot"
-  bash eval_zero_shot.sh "$HFDIR" causal
+  bash scripts/eval_zero_shot.sh "$HFDIR" causal
 fi
 
 if [ "$GLUE" = 1 ]; then
   echo ">> GLUE fine-tuning (slow: boolq/multirc/rte/wsc/mrpc/qqp/mnli)"
   [ -f "$EVAL_REPO/../.env" ] || : > "$EVAL_REPO/../.env"   # eval_finetuning.sh sources it
-  bash eval_finetuning.sh --model_path "$HFDIR"
+  bash scripts/eval_finetuning.sh --model_path "$HFDIR"
 fi
 
 echo ">> done: $VARIANT  (results under $EVAL_REPO/results/$VARIANT)"
