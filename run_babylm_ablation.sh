@@ -10,6 +10,7 @@
 #   bash run_babylm_ablation.sh babylm_100m 4740 100 bl100m 500
 PY=/media/volume/yupei-data/envs/nanogpt/bin/python
 DS="${1:?dataset}"; MAXIT="${2:?max_iters}"; WARM="${3:?warmup_iters}"; PREFIX="${4:?prefix}"; EVAL="${5:-50}"
+DONE="results/${PREFIX}_ablation.done"; rm -f "$DONE"   # completion marker (armed on start)
 
 for norm in ln rms; do
   for mlp in mlp swiglu; do
@@ -18,6 +19,10 @@ for norm in ln rms; do
       SW=False;   [ "$mlp"  = swiglu ] && SW=True
       ROPE=False; [ "$pos"  = rope ]   && ROPE=True
       NAME="${PREFIX}-${norm}-${mlp}-${pos}"
+      if grep -q "\"run_name\": \"${NAME}\"" results/experiments.jsonl 2>/dev/null; then
+        echo "==== skip ${NAME} (already in experiments.jsonl) ===="
+        continue
+      fi
       echo "================ ${NAME}  (dataset=${DS}) ================"
       "$PY" train.py config/train_babylm.py \
         --dataset="$DS" --max_iters="$MAXIT" --lr_decay_iters="$MAXIT" --warmup_iters="$WARM" --eval_interval="$EVAL" \
@@ -28,3 +33,4 @@ for norm in ln rms; do
   done
 done
 echo "==== ablation complete: ${PREFIX} (dataset=${DS}) ===="
+touch "$DONE"   # completion marker for the waiter
