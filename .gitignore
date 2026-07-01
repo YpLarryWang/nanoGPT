@@ -25,3 +25,10 @@ analysis/
 data/babylm/raw/
 data/babylm/clean/
 data/babylm/tokenizer/
+
+# 100M-word track data artifacts (mirror data/babylm/; *.bin/*.pkl already ignored globally)
+data/babylm_100m/raw/
+data/babylm_100m/clean/
+data/babylm_100m/tokenizer/
+# ablation completion markers (runtime, not code)
+results/*.done

@@ -33,10 +33,10 @@ Expect: `number of parameters: ~50.6M` (≈0.26M **under** the MLP arm → the �
 formal runs:
 ```
 CUDA_VISIBLE_DEVICES=0 nohup python train.py config/train_tinystories.py \
-    --use_rmsnorm=True --bias=False --use_swiglu=True  --use_rope=True \
+    --use_rmsnorm=True --bias=False --use_swiglu=True  --swiglu_mult=4.0  --use_rope=True \
     --batch_size=32 --gradient_accumulation_steps=16 --compile=True \
-    --out_dir=out-ts-swiglu4-rope --wandb_run_name=ts-50m-rmsnorm-swiglu-rope \
-    > /tmp/rms-swiglu-rope-ts.log 2>&1 &
+    --out_dir=out-ts-swiglu4-rope --wandb_run_name=ts-50m-rmsnorm-swiglu4-rope \
+    > /tmp/rms-swiglu4-rope-ts.log 2>&1 &
 ```
 
 ![nanoGPT](assets/nanogpt.jpg)
