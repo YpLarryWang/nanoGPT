@@ -5,11 +5,11 @@
 #   pos      : learned (abs wpe)   | rope (RoPE)
 # 8 runs, each logged to wandb + results/experiments.jsonl. Continues on failure.
 #
-# Usage: bash run_babylm_ablation.sh <dataset> <max_iters> <warmup_iters> <prefix>
+# Usage: bash run_babylm_ablation.sh <dataset> <max_iters> <warmup_iters> <prefix> [eval_interval]
 #   bash run_babylm_ablation.sh babylm      466  40  bl10m
-#   bash run_babylm_ablation.sh babylm_100m 5150 100 bl100m
+#   bash run_babylm_ablation.sh babylm_100m 4740 100 bl100m 500
 PY=/media/volume/yupei-data/envs/nanogpt/bin/python
-DS="${1:?dataset}"; MAXIT="${2:?max_iters}"; WARM="${3:?warmup_iters}"; PREFIX="${4:?prefix}"
+DS="${1:?dataset}"; MAXIT="${2:?max_iters}"; WARM="${3:?warmup_iters}"; PREFIX="${4:?prefix}"; EVAL="${5:-50}"
 
 for norm in ln rms; do
   for mlp in mlp swiglu; do
@@ -20,7 +20,7 @@ for norm in ln rms; do
       NAME="${PREFIX}-${norm}-${mlp}-${pos}"
       echo "================ ${NAME}  (dataset=${DS}) ================"
       "$PY" train.py config/train_babylm.py \
-        --dataset="$DS" --max_iters="$MAXIT" --lr_decay_iters="$MAXIT" --warmup_iters="$WARM" \
+        --dataset="$DS" --max_iters="$MAXIT" --lr_decay_iters="$MAXIT" --warmup_iters="$WARM" --eval_interval="$EVAL" \
         --wandb_run_name="$NAME" --out_dir="out-babylm/${NAME}" \
         --use_rmsnorm=$RMS --use_swiglu=$SW --use_rope=$ROPE \
         || echo "!!! FAILED: ${NAME}"
