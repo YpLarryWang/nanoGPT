@@ -1,16 +1,24 @@
-# saves the openwebtext dataset to a binary file for training. following was helpful:
-# https://github.com/HazyResearch/flash-attention/blob/main/training/src/datamodules/language_modeling_hf.py
+# BabyLM: tokenize the carved clean splits into train.bin/val.bin + meta.pkl.
+#   clean/{train,val}/*.txt  --(16k byte-level BPE)-->  uint16 stream + meta.pkl
+# Run from repo root (strict-small):  python data/babylm/prepare.py
+#   for the 100M strict set:          python data/babylm/prepare.py --data-dir data/babylm_100m
 
+import argparse
 import os
 import pickle
-from tqdm import tqdm
 import numpy as np
 from tokenizers import Tokenizer
 from split import SOURCES
 
 
-DATA_DIR = os.path.dirname(__file__)
-TOKENIZER_NAME = "bpe-16000.json"
+ap = argparse.ArgumentParser()
+ap.add_argument("--data-dir", default=os.path.dirname(__file__),
+                help="dataset dir holding clean/ + tokenizer/; bins + meta.pkl are written here")
+ap.add_argument("--tokenizer", default="bpe-16000.json")
+args = ap.parse_args()
+
+DATA_DIR = args.data_dir
+TOKENIZER_NAME = args.tokenizer
 TOKENIZER_PATH = os.path.join(DATA_DIR, "tokenizer", TOKENIZER_NAME)
 
 EOT_TEXT = "<|endoftext|>"
