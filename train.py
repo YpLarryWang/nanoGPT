@@ -55,6 +55,7 @@ block_size = 1024
 # resumes exactly from sampler_seed). Default 'random' preserves the original nanoGPT behaviour.
 sampler = 'random'
 sampler_seed = 1337
+seed = 1337 # base RNG seed for weight init + 'random' data sampling; vary for multi-seed studies (actual = seed + ddp_rank)
 # model
 n_layer = 12
 n_head = 12
@@ -123,7 +124,7 @@ if save_iters_set:
 
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
-torch.manual_seed(1337 + seed_offset)
+torch.manual_seed(seed + seed_offset)
 torch.backends.cuda.matmul.allow_tf32 = True # allow tf32 on matmul
 torch.backends.cudnn.allow_tf32 = True # allow tf32 on cudnn
 device_type = 'cuda' if 'cuda' in device else 'cpu' # for later use in torch.autocast
