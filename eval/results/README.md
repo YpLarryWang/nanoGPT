@@ -41,13 +41,14 @@ marks the provenance of the **accuracy** (non-reading) columns per row:
 
 | `eval_tok` | meaning | rows |
 |---|---|---|
-| `all-fixed` | every metric under the corrected tokenizer | the winner only (its fix also nudged accuracy: entity −2.24, supplement +1.66, blimp −0.65, avg5 ~flat 54.20) |
-| `reading-fixed` | `reading_*` re-run under the fix; accuracy columns are from the pre-fix run (`add_prefix_space=False`, mildly handicapped ≤~2 pts, mostly entity/supplement) | the other 8 ablations + the bl10m winner |
+| `all-fixed` | every metric under the corrected tokenizer | **all 9 ablations** (winner + 8 others + bl10m) |
 | `native` | official GPT-2 baseline tokenizer; never affected | both baselines |
 
-We intentionally did **not** re-run the 8 ablations' accuracy: 33M is a proof-of-concept before
-scaling up, so the compute isn't worth it. The `reading-fixed` marker makes that explicit rather
-than silently mixing pre-/post-fix numbers in one column.
+All 9 ablation rows were re-run under the fix on 2026-07-02 (the 5 non-reading tasks; `reading_*`
+was already post-fix and preserved), so the accuracy columns are now uniform `all-fixed`. The fix's
+systematic effect — **supplement ↑, entity_tracking ↓** (≤~2 pts) — reshuffled the mid-table and
+narrowed the top two to a near-tie: winner `avg5` 54.20 vs `rms-mlp-learned` 54.18 (a 0.57 gap
+pre-fix). Biggest rank movers: `ln-swiglu-learned` ↑3, `ln-mlp-rope` ↓3, `rms-swiglu4-rope` ↓3.
 
 ## Coverage note
 - Zero-shot (`zero_shot.csv`): all 9 bl100m variants, our bl10m winner, and both baselines.
