@@ -15,8 +15,9 @@ Our headline story: a 33M model matching/apporaching a 98M GPT-2 at ~1/3 the par
 ## Files
 - `zero_shot.csv` — full-data zero-shot. Columns BLiMP / BLiMP-supplement / EWoK /
   entity_tracking / COMPS are **accuracy (%)**; `avg5` = mean of those five.
-  `reading_eye` / `reading_selfpaced` = correlation with human reading times
-  (eye-tracking / self-paced); not part of `avg5`.
+  `reading_eye` / `reading_selfpaced` = surprisal **predictive power** over human reading
+  times: % of residual RT variance explained, ((R²_model−R²_base)/(1−R²_base))×100, averaged
+  over the eye-tracking measures / the self-paced measure (NOT a correlation; not part of `avg5`).
 - `glue.csv` — GLUE fine-tuning, reported with the **official per-task metric**:
   boolq / multirc / rte / wsc / mnli = **accuracy**; mrpc / qqp = **F1** (all %).
   `macro7` = mean of the seven task scores.
@@ -26,6 +27,19 @@ Our headline story: a 33M model matching/apporaching a 98M GPT-2 at ~1/3 the par
   included) is now our own measured number**, so all comparisons are apples-to-apples. Our
   measured baselines reproduce the official model cards closely (Strict blimp 74.73 vs 74.53;
   GLUE within ~1–2 pts) and additionally provide EWoK / WSC / avg5 / macro7, which the cards omit.
+- `ours(fixed-tok)` — re-run after the tokenizer fix (see below). Currently the winner only.
+
+## Tokenizer fix (reading scores)
+`reading_*` read ~0 for every nanoGPT variant (winner 0.24 / 0.10) while the GPT-2 baselines
+were fine (10.54 / 3.32) — a converter bug, not a model property. `convert_nanogpt_to_hf.py`
+wrapped our byte-level BPE without `add_prefix_space`, so the eval tokenizer mapped a bare word
+to the no-space subword (`dog`) instead of the space-prefixed `Ġdog` the model predicts mid-text;
+the reading harness scores `P(target[0])`, so it read the wrong token. Setting
+`add_prefix_space=True` (matches training + the GPT-2 convention) fixed it — winner verified
+**0.24/0.10 → 8.70/4.47**. **`reading_*` is now post-fix for all rows.** Non-reading columns are
+post-fix for the winner only (`ours(fixed-tok)`; the fix also nudged them — entity −2.24,
+supplement +1.66, blimp −0.65, avg5 ~flat at 54.20) and remain pre-fix for the other 8
+ablations; a ~30-min re-run would make the whole table uniform.
 
 ## Coverage note
 - Zero-shot (`zero_shot.csv`): all 9 bl100m variants, our bl10m winner, and both baselines.
@@ -39,5 +53,5 @@ wsc f1 24.0; mrpc acc 72.06; qqp acc 76.80.
 
 ## Bottom line
 Across our own axes the winner **`bl100m-rms-swiglu-rope`** (RMS-norm + SwiGLU 8/3 + RoPE)
-leads on all three: lowest val loss, highest zero-shot `avg5` (54.17), and highest GLUE
+leads on all three: lowest val loss, highest zero-shot `avg5` (54.20), and highest GLUE
 `macro7` (65.92) — despite being 1/3 the size of the GPT-2 baseline.
