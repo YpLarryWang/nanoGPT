@@ -82,7 +82,12 @@ def main():
     model.save_pretrained(args.out, safe_serialization=True)
     shutil.copy(os.path.join(HF_DIR, "modeling_nanogpt.py"), os.path.join(args.out, "modeling_nanogpt.py"))
 
-    tok = PreTrainedTokenizerFast(tokenizer_file=args.tokenizer, eos_token=EOT, pad_token=EOT)
+    # add_prefix_space=True is REQUIRED. Our BPE was trained with it, so mid-stream words are
+    # space-prefixed byte-level tokens ("Ġdog"). The reading-time eval tokenizes a BARE word and
+    # scores P(target[0]); the fast wrapper otherwise defaults this to False, so "dog" (id 7839)
+    # != "Ġdog" (id 1233) and the reading score collapses to ~0. This also matches training and
+    # the GPT-2 baseline convention. (Verified: reading 0.24/0.10 -> 8.70/4.47 on the winner.)
+    tok = PreTrainedTokenizerFast(tokenizer_file=args.tokenizer, eos_token=EOT, pad_token=EOT, add_prefix_space=True)
     eot_id = tok.convert_tokens_to_ids(EOT)
     assert eot_id == 0, f"expected {EOT} id 0, got {eot_id}"
     if len(tok) != margs["vocab_size"]:
