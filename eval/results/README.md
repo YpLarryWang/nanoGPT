@@ -22,10 +22,16 @@ Our headline story: a 33M model matching/apporaching a 98M GPT-2 at ~1/3 the par
   `macro7` = mean of the seven task scores.
 
 ## `source` column
-- `ours(measured)` — run by us through the official pipeline (apples-to-apples).
-- `official-README(remeasuring)` — from the baseline model cards; we are **re-running the
-  baselines through the same pipeline** to get EWoK, WSC, and macro7 on identical footing.
-  These rows will be replaced with our measured numbers (and `avg5` / `macro7` filled in).
+- `ours(measured)` — run by us through the official pipeline. **Every row (both baselines
+  included) is now our own measured number**, so all comparisons are apples-to-apples. Our
+  measured baselines reproduce the official model cards closely (Strict blimp 74.73 vs 74.53;
+  GLUE within ~1–2 pts) and additionally provide EWoK / WSC / avg5 / macro7, which the cards omit.
+
+## Coverage note
+- Zero-shot (`zero_shot.csv`): all 9 bl100m variants, our bl10m winner, and both baselines.
+- GLUE (`glue.csv`): our two 100M models (winner + rms-mlp-learned) and **both baselines**.
+  Our **10M** model has zero-shot only — no GLUE run yet — so there is no `bl10m` row in
+  `glue.csv` (a 10M-track GLUE head-to-head would need ~2.5 h to fine-tune bl10m-rms-swiglu-rope).
 
 ## Winner GLUE secondary metrics (reference, not in the CSV)
 `bl100m-rms-swiglu-rope`: boolq f1 78.91 / mcc 31.02; multirc f1 44.03; rte f1 54.55;
