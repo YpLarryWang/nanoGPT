@@ -50,6 +50,11 @@ dataset = 'openwebtext'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
 block_size = 1024
+# data sampling: 'random' = nanoGPT i.i.d. windows (with replacement); 'shuffle' = deterministic
+# shuffled-epoch schedule (each token seen once/epoch, per-epoch offset jitter, DDP-correct,
+# resumes exactly from sampler_seed). Default 'random' preserves the original nanoGPT behaviour.
+sampler = 'random'
+sampler_seed = 1337
 # model
 n_layer = 12
 n_head = 12
@@ -128,14 +133,51 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 
 # poor man's data loader
 data_dir = os.path.join('data', dataset)
-def get_batch(split):
+
+class ShuffleSchedule:
+    """Deterministic shuffled-epoch schedule over train.bin chunk starts (sampler='shuffle').
+
+    Each epoch is a full pass: every valid block_size window appears exactly once, in shuffled
+    order, with a per-epoch random start offset (boundary jitter so fixed blocks aren't memorised
+    across the ~10 passes). The run reads a flat concatenation of epochs indexed by (draw, rank),
+    so the schedule is stateless: a fixed seed reproduces it and resume is exact via iter_num (no
+    sampler state in the checkpoint). Under DDP every rank builds the identical schedule and reads
+    disjoint groups, so the ranks tile the stream with no overlap and no gaps.
+    """
+    def __init__(self, data_len, block_size, batch_size, world_size, rank, n_draws, seed):
+        self.B, self.world, self.rank = batch_size, world_size, rank
+        gen = torch.Generator().manual_seed(seed)
+        max_start = data_len - block_size - 1                    # y needs one token past x
+        need = (n_draws * world_size + world_size) * batch_size  # chunks to cover, + one draw slack
+        parts, total, epochs, n = [], 0, 0, 0
+        while total < need:
+            off = int(torch.randint(block_size, (1,), generator=gen))         # per-epoch phase jitter
+            n = (max_start - off) // block_size + 1
+            starts = off + block_size * torch.arange(n, dtype=torch.int64)
+            parts.append(starts[torch.randperm(n, generator=gen)])            # shuffle this epoch
+            total += n; epochs += 1
+        self.sched = torch.cat(parts).numpy()
+        self.n_epochs, self.n_chunks = epochs, n
+
+    def batch_starts(self, draw):
+        g = draw * self.world + self.rank                        # this rank's group at this draw
+        i = g * self.B
+        assert i + self.B <= len(self.sched), "shuffle schedule exhausted -- increase slack"
+        return self.sched[i:i + self.B]
+
+def get_batch(split, scheduled=False):
     # We recreate np.memmap every batch to avoid a memory leak, as per
     # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
     if split == 'train':
         data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
     else:
         data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
-    ix = torch.randint(len(data) - block_size, (batch_size,))
+    if scheduled:                                    # sampler='shuffle' training fetch (exact epochs)
+        global train_draw
+        ix = torch.from_numpy(schedule.batch_starts(train_draw))
+        train_draw += 1
+    else:                                            # nanoGPT i.i.d. windows (with replacement)
+        ix = torch.randint(len(data) - block_size, (batch_size,))
     x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
     y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
     if device_type == 'cuda':
@@ -148,6 +190,8 @@ def get_batch(split):
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
 best_val_loss = 1e9
+train_draw = 0     # next scheduled train batch on this rank (sampler='shuffle'; derived from iter_num)
+schedule = None    # ShuffleSchedule, built just before the training loop when sampler='shuffle'
 
 # attempt to derive vocab_size from the dataset
 meta_path = os.path.join(data_dir, 'meta.pkl')
@@ -273,8 +317,21 @@ if wandb_log and master_process:
     wandb.define_metric("tokens")
     wandb.define_metric("*", step_metric="tokens")   # plot all metrics vs tokens
 
+# build the deterministic shuffled-epoch schedule (no-op unless sampler='shuffle')
+if sampler == 'shuffle':
+    train_len = len(np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r'))
+    schedule = ShuffleSchedule(train_len, block_size, batch_size, ddp_world_size,
+                               ddp_rank if ddp else 0,
+                               (max_iters + 3) * gradient_accumulation_steps, sampler_seed)
+    train_draw = iter_num * gradient_accumulation_steps    # exact resume: derive draw from iter_num
+    if master_process:
+        print(f"sampler='shuffle': {schedule.n_epochs} shuffled epochs x {schedule.n_chunks:,} "
+              f"chunks, seed={sampler_seed}, start draw={train_draw}")
+elif sampler != 'random':
+    raise ValueError(f"unknown sampler {sampler!r} (expected 'random' or 'shuffle')")
+
 # training loop
-X, Y = get_batch('train') # fetch the very first batch
+X, Y = get_batch('train', scheduled=(sampler == 'shuffle')) # fetch the very first batch
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
@@ -348,7 +405,7 @@ while True:
             logits, loss = model(X, Y)
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
-        X, Y = get_batch('train')
+        X, Y = get_batch('train', scheduled=(sampler == 'shuffle'))
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
     # clip the gradient
@@ -387,6 +444,7 @@ if master_process:  # only rank-0 writes, so a multi-GPU (DDP) run logs one line
         'time': time.strftime('%Y-%m-%d %H:%M:%S'),
         'run_name': wandb_run_name,
         'dataset': dataset,
+        'sampler': sampler,
         'n_layer': n_layer, 'n_head': n_head, 'n_embd': n_embd, 'block_size': block_size,
         'params_M': round(raw_model.get_num_params() / 1e6, 2),
         'batch_size': batch_size, 'grad_accum': gradient_accumulation_steps,
