@@ -64,3 +64,22 @@ wsc f1 24.0; mrpc acc 72.06; qqp acc 76.80.
 Across our own axes the winner **`bl100m-rms-swiglu-rope`** (RMS-norm + SwiGLU 8/3 + RoPE)
 leads on all three: lowest val loss, highest zero-shot `avg5` (54.20), and highest GLUE
 `macro7` (65.92) — despite being 1/3 the size of the GPT-2 baseline.
+
+## Scale-up experiments (`scale_up.csv`)
+Separate table (2026-07-02) that scales the winner arch (RMS+SwiGLU 8/3+RoPE) **past the 33M
+proof-of-concept**, holding arch fixed and sweeping depth/width/dropout on the 100M corpus
+(`sampler=shuffle`, 10 epochs). Extra columns vs `zero_shot.csv`: `n_embd`, `n_layer`, `dropout`,
+`sampler`, `best_val_loss`. Same metric definitions (avg5 = mean of the five accuracies; reading_*
+= surprisal predictive power). Kept apart so the 33M architecture ablation stays clean.
+
+Key rows / findings:
+- **Winner `bl100m-d512L24-do0.1` (≈83M, deep+dropout): avg5 55.28 ± 0.63 (n=3 seeds) vs the 98M
+  GPT-2 baseline's 54.71** — an 83M model matches/edges the 98M baseline at ~85% the params,
+  winning BLiMP / EWoK / COMPS. The `-mean` row is the 3-seed average; `-s1337/-s1338/-s1339`
+  are the individual seeds (single best seed hit avg5 56.04 — the seed pass corrected it down).
+- **Dropout is scale-dependent:** at 33M dropout 0.1 cost 0.49 avg5, but at 83M `d512L24` do0.0→do0.1
+  removes an end-of-training overfit (val gap 0.05→0) and lifts the reliable tasks (BLiMP +2.2).
+- **Depth ≫ width** at fixed ~83M: `d512L24` (deep) > `d768L10` (wide), and the 97M `d768L12`
+  regressed — width scaling plateaued.
+- **entity_tracking is the noise source:** std 1.86 across the 3 winner seeds (range 21.2–25.6),
+  which drives most of avg5's ±0.63; the reliable-4 (ex-entity) is tight and depth-monotonic.
