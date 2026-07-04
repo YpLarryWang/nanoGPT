@@ -61,6 +61,7 @@ def main():
         use_swiglu=margs["use_swiglu"],
         swiglu_mult=margs.get("swiglu_mult", 8 / 3),
         use_rope=margs["use_rope"],
+        use_attn_gate=margs.get("use_attn_gate", False),
         tie_word_embeddings=True,
         bos_token_id=0,
         eos_token_id=0,

@@ -91,6 +91,9 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
+        self.use_attn_gate = config.use_attn_gate
+        if self.use_attn_gate:
+            self.attn_gate = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
         # flash attention make GPU go brrrrr but support is only in PyTorch >= 2.0
         self.flash = hasattr(torch.nn.functional, 'scaled_dot_product_attention')
         if not self.flash:
@@ -132,6 +135,8 @@ class CausalSelfAttention(nn.Module):
             y = att @ v # (B, nh, T, T) x (B, nh, T, hs) -> (B, nh, T, hs)
         y = y.transpose(1, 2).contiguous().view(B, T, C) # re-assemble all head outputs side by side
 
+        if self.use_attn_gate:
+            y = y * torch.sigmoid(self.attn_gate(x)) # elementwise input-dependent gate on attn output (Qwen)
         # output projection
         y = self.resid_dropout(self.c_proj(y))
         return y
@@ -202,6 +207,7 @@ class GPTConfig:
     use_swiglu: bool = False # True = SWIGLU (Llama style), False = MLP
     swiglu_mult: float = 8/3
     use_rope: bool = False
+    use_attn_gate: bool = False # Qwen-style elementwise sigmoid gate on the attention output
 
 class GPT(nn.Module):
 
@@ -381,6 +387,21 @@ class GPT(nn.Module):
         print(f"using fused AdamW: {use_fused}")
 
         return optimizer
+    
+    def zeropower_via_newtonschulz5(G, steps=5):
+        assert G.ndim >= 2
+        a, b, c = (3.4445, -4.7750, 2.0315)
+        X = G.bfloat16()
+        if G.size(-2) > G.size(-1):
+            X = X.mT
+        X = X / (X.norm(dim=(-2,-1), keepdim=True) + 1e-7)
+        for _ in range(steps):
+            A = X @ X.mT
+            B = b * A + c * A @ A
+            X = a * X + B @ X
+        if G.size(-2) > G.size(-1):
+            X = X.mT
+        return X
 
     def estimate_mfu(self, fwdbwd_per_iter, dt):
         """ estimate model flops utilization (MFU) in units of the current GPU's bfloat16 peak FLOPS """

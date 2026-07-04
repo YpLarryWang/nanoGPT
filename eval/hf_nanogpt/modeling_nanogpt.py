@@ -49,6 +49,7 @@ class NanoGPTConfig(PretrainedConfig):
         use_swiglu=False,
         swiglu_mult=8 / 3,
         use_rope=False,
+        use_attn_gate=False,
         rope_theta=10000.0,
         layer_norm_epsilon=1e-5,
         tie_word_embeddings=True,
@@ -65,6 +66,7 @@ class NanoGPTConfig(PretrainedConfig):
         self.use_swiglu = use_swiglu
         self.swiglu_mult = swiglu_mult
         self.use_rope = use_rope
+        self.use_attn_gate = use_attn_gate
         self.rope_theta = rope_theta
         self.layer_norm_epsilon = layer_norm_epsilon
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
@@ -136,6 +138,9 @@ class CausalSelfAttention(nn.Module):
         self.n_head = config.n_head
         self.n_embd = config.n_embd
         self.dropout = config.dropout
+        self.use_attn_gate = config.use_attn_gate
+        if self.use_attn_gate:
+            self.attn_gate = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
         self.use_rope = config.use_rope
         if self.use_rope:
             head_dim = config.n_embd // config.n_head
@@ -171,6 +176,8 @@ class CausalSelfAttention(nn.Module):
             )
 
         y = y.transpose(1, 2).contiguous().view(B, T, C)
+        if self.use_attn_gate:
+            y = y * torch.sigmoid(self.attn_gate(x)) # elementwise input-dependent gate on attn output (Qwen)
         y = self.resid_dropout(self.c_proj(y))
         return y
 
