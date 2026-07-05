@@ -31,7 +31,7 @@ bl10m-rms-swiglu-rope-do0.1,adamw,no,RMS+SwiGLU(8/3)+RoPE,10M,512,8,33,0.1,rando
 bl10m-rms-swiglu-rope-do0.2,adamw,no,RMS+SwiGLU(8/3)+RoPE,10M,512,8,33,0.2,random,64.02,54.88,49.53,13.78,51.13,46.67,54.89,9.80,4.64,4.1540,,,,,,,,,,ours(measured)
 bl10m-d512L24-do0.1,adamw,no,RMS+SwiGLU(8/3)+RoPE,10M,512,24,83,0.1,shuffle,65.17,55.02,49.61,17.24,51.01,47.61,55.20,9.57,4.63,4.0874,,,,,,,,,,ours(R2 baseline)
 bl10m-d512L24-do0.1-gate,adamw,yes,RMS+SwiGLU(8/3)+RoPE+gate,10M,512,24,89,0.1,shuffle,67.19,58.69,50.28,17.65,51.09,48.98,56.81,10.26,4.54,3.9025,,,,,,,,,,ours(R2 gated-attn; reliable-4 56.81)
-muon-bl10m-d512L24-do0.1-gate,muon,yes,RMS+SwiGLU(8/3)+RoPE+gate,10M,512,24,89,0.1,shuffle,68.09,57.25,50.53,14.47,51.76,48.42,56.91,9.36,4.16,3.8181,,,,,,,,,,ours(measured;Muon optimizer;vast 4x3090;reliable-4 56.91)
+muon-bl10m-d512L24-do0.1-gate,muon,yes,RMS+SwiGLU(8/3)+RoPE+gate,10M,512,24,89,0.1,shuffle,68.09,57.25,50.53,14.47,51.76,48.42,56.91,9.36,4.16,3.8181,69.54,60.40,50.36,59.62,82.04,62.19,46.19,61.48,,ours(measured;Muon optimizer;vast 4x3090;reliable-4 56.91)
 bl10m-d512L32-do0.1,adamw,no,RMS+SwiGLU(8/3)+RoPE,10M,512,32,108,0.1,shuffle,64.97,56.30,50.82,33.47,50.65,51.24,55.69,9.59,4.55,4.1042,,,,,,,,,,ours(R2 baseline;entity draw high -> avg5 inflated)
 bl10m-d512L32-do0.1-gate,adamw,yes,RMS+SwiGLU(8/3)+RoPE+gate,10M,512,32,116,0.1,shuffle,68.68,57.52,49.95,18.08,51.19,49.08,56.84,9.71,4.48,3.9016,,,,,,,,,,ours(R2 gated-attn;entity draw low -> use reliable-4 56.84)
 muon-bl10m-d512L32-do0.1-gate,muon,yes,RMS+SwiGLU(8/3)+RoPE+gate,10M,512,32,116,0.1,shuffle,67.73,58.19,50.34,16.26,51.65,48.83,56.98,9.70,4.81,3.8468,,,,,,,,,,ours(measured;Muon optimizer;vast 4x3090;reliable-4 56.98)

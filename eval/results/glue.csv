@@ -3,3 +3,4 @@ bl100m-rms-swiglu-rope,RMS+SwiGLU(8/3)+RoPE,100M,70.15,64.03,56.83,63.46,81.43,6
 bl100m-rms-mlp-learned,RMS+MLP+learned,100M,66.79,59.90,57.55,63.46,82.67,65.76,53.55,64.24,ours(measured)
 Baseline-Strict,GPT-2 (baseline),100M,69.54,66.25,58.99,69.23,86.29,71.75,59.98,68.86,ours(measured)
 Baseline-Strict-Small,GPT-2 (baseline),10M,67.52,65.97,60.43,63.46,82.28,62.63,50.00,64.61,ours(measured)
+muon-bl10m-d512L24-do0.1-gate,RMS+SwiGLU(8/3)+RoPE+gate,10M,69.54,60.40,50.36,59.62,82.04,62.19,46.19,61.48,ours(measured;Muon optimizer;vast 4x3090;finetune seed42)
