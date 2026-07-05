@@ -32,3 +32,5 @@ data/babylm_100m/clean/
 data/babylm_100m/tokenizer/
 # ablation completion markers (runtime, not code)
 results/*.done
+
+reference/

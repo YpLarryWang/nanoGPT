@@ -67,6 +67,7 @@ use_swiglu=False
 swiglu_mult=8/3
 use_rope=False
 use_attn_gate=False
+use_muon = False
 
 # adamw optimizer
 learning_rate = 6e-4 # max learning rate
@@ -260,9 +261,16 @@ model.to(device)
 scaler = torch.amp.GradScaler('cuda', enabled=(dtype == 'float16'))
 
 # optimizer
-optimizer = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type)
+optimizers = model.configure_optimizers(weight_decay, learning_rate, (beta1, beta2), device_type, use_muon)
+# capture base LRs BEFORE any resume-load
+base_lrs = [[g['lr'] for g in opt.param_groups] for opt in optimizers]
 if init_from == 'resume':
-    optimizer.load_state_dict(checkpoint['optimizer'])
+    saved = checkpoint['optimizer']
+    saved = saved if isinstance(saved, list) else [saved] # legacy single-opt ckpt
+    assert len(saved) == len(optimizers), \
+        f"resume mismatch: ckpt has {len(saved)} optimizer(s), model built {len(optimizers)} — did use_muon change?"
+    for opt, sd in zip(optimizers, saved):
+        opt.load_state_dict(sd)
 checkpoint = None # free up memory
 
 # compile the model
@@ -348,7 +356,7 @@ def save_checkpoint(path: str, weights_only: bool = False, extra: dict = None):
         'config': config
     }
     if not weights_only:
-        ckpt['optimizer'] = optimizer.state_dict()
+        ckpt['optimizer'] = [opt.state_dict() for opt in optimizers]
         ckpt['best_val_loss'] = best_val_loss
     if extra:
         ckpt.update(extra)
@@ -359,8 +367,10 @@ while True:
 
     # determine and set the learning rate for this iteration
     lr = get_lr(iter_num) if decay_lr else learning_rate
-    for param_group in optimizer.param_groups:
-        param_group['lr'] = lr
+    frac = lr / learning_rate
+    for opt, bases in zip(optimizers, base_lrs):
+        for group, base in zip(opt.param_groups, bases):
+            group['lr'] = base * frac
 
     # evaluate the loss on train/val sets and write checkpoints
     if iter_num % eval_interval == 0 and master_process:
@@ -380,7 +390,7 @@ while True:
             if iter_num > 0:
                 checkpoint = {
                     'model': raw_model.state_dict(),
-                    'optimizer': optimizer.state_dict(),
+                    'optimizer': [opt.state_dict() for opt in optimizers],
                     'model_args': model_args,
                     'iter_num': iter_num,
                     'best_val_loss': best_val_loss,
@@ -412,13 +422,16 @@ while True:
         scaler.scale(loss).backward()
     # clip the gradient
     if grad_clip != 0.0:
-        scaler.unscale_(optimizer)
+        for opt in optimizers:
+            scaler.unscale_(opt)
         torch.nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
     # step the optimizer and scaler if training in fp16
-    scaler.step(optimizer)
+    for opt in optimizers: # step each opt
+        scaler.step(opt)
     scaler.update()
     # flush the gradients as soon as we can, no need for this memory anymore
-    optimizer.zero_grad(set_to_none=True)
+    for opt in optimizers:
+        opt.zero_grad(set_to_none=True)
 
     # timing and logging
     t1 = time.time()
@@ -442,6 +455,14 @@ while True:
 # final metrics + one-line experiment record (project ground-truth log)
 if master_process:  # only rank-0 writes, so a multi-GPU (DDP) run logs one line, not N.
     final_metrics = estimate_loss()
+    # the in-loop eval only fires at multiples of eval_interval, so when max_iters % eval_interval
+    # != 0 the final model is never offered to the checkpointer. Give it a save chance here if it
+    # beats every periodic eval (no-op when it doesn't). Guard iter_num > 0 so an eval_only / zero-
+    # step pass can't checkpoint a random-init model. Scoped to the best-val regime; when
+    # always_save_checkpoint is on, the periodic path already saves the latest model every eval.
+    if not always_save_checkpoint and iter_num > 0 and final_metrics['val'] < best_val_loss:
+        best_val_loss = final_metrics['val']
+        save_checkpoint(os.path.join(out_dir, 'ckpt.pt'))  # final model became the new best
     record = {
         'time': time.strftime('%Y-%m-%d %H:%M:%S'),
         'run_name': wandb_run_name,

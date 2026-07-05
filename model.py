@@ -194,6 +194,48 @@ class Block(nn.Module):
         x = x + self.mlp(self.ln_2(x))
         return x
 
+
+def zeropower_via_newtonschulz5(G, steps=5):
+    assert G.ndim >= 2
+    a, b, c = (3.4445, -4.7750, 2.0315)
+    X = G.bfloat16()
+    if G.size(-2) > G.size(-1):
+        X = X.mT
+    X = X / (X.norm(dim=(-2,-1), keepdim=True) + 1e-7)
+    for _ in range(steps):
+        A = X @ X.mT
+        B = b * A + c * A @ A
+        X = a * X + B @ X
+    if G.size(-2) > G.size(-1):
+        X = X.mT
+    return X
+
+
+class Muon(torch.optim.Optimizer):
+    def __init__(self, params, lr=0.02, momentum=0.95, nesterov=True, ns_steps=5, weight_decay=0.0):
+        super().__init__(params, dict(lr=lr, momentum=momentum, nesterov=nesterov, ns_steps=ns_steps, weight_decay=weight_decay))
+
+    @torch.no_grad()
+    def step(self):
+        for group in self.param_groups:
+            for p in group['params']:
+                if p.grad is None: continue
+                g = p.grad
+                buf = self.state[p].setdefault('mom', torch.zeros_like(g))
+                m = group['momentum']
+                # TODO (i)   buf ← m·buf + (1−m)·g          [buf.lerp_(g, 1-m)]
+                buf.lerp_(g, 1 - m) # (i)  EMA momentum buffer
+                # TODO (ii)  g ← (1−m)·g + m·buf  if nesterov [g = g.lerp_(buf, m)] else buf
+                g = g.lerp_(buf, m) if group['nesterov'] else buf    # (ii) Nesterov lookahead
+                # TODO (iii) g ← zeropower_via_newtonschulz5(g, group['ns_steps'])
+                g = zeropower_via_newtonschulz5(g, group['ns_steps']) # (iii) orthogonalize
+                # TODO (iv)  g ← g · max(1, g.size(-2)/g.size(-1))**0.5
+                g = g * max(1, g.size(-2)/g.size(-1))**0.5  # (iv) shape-correct the scale
+                if group['weight_decay']:
+                    p.mul_(1 - group['lr'] * group['weight_decay']) # decoupled WD, AdamW-style
+                p.add_(g, alpha=-group['lr'])
+
+
 @dataclass
 class GPTConfig:
     block_size: int = 1024
@@ -362,11 +404,19 @@ class GPT(nn.Module):
 
         return model
 
-    def configure_optimizers(self, weight_decay, learning_rate, betas, device_type):
+    def configure_optimizers(self, weight_decay, learning_rate, betas, device_type, use_muon):
         # start with all of the candidate parameters
         param_dict = {pn: p for pn, p in self.named_parameters()}
         # filter out those that do not require grad
         param_dict = {pn: p for pn, p in param_dict.items() if p.requires_grad}
+        if use_muon:
+            muon_params = [p for n,p in param_dict.items() if p.dim() >= 2 and 'wte' not in n and 'lm_head' not in n]
+            adam_params = [p for n,p in param_dict.items() if p.dim() < 2 or 'wte' in n or 'lm_head' in n]
+            assert len(muon_params) + len(adam_params) == len(param_dict), "Error: Muon params and Adam params should add to the total params!"
+            muon = Muon(muon_params, lr=0.02, momentum=0.95)
+            adam = torch.optim.AdamW(adam_params, lr=learning_rate, betas=betas, weight_decay=weight_decay)
+            print(f"Muon: {len(muon_params)} matrices | AdamW: {len(adam_params)} tensors (incl. embed/head)")
+            return [muon, adam]
         # create optim groups. Any parameters that is 2D will be weight decayed, otherwise no.
         # i.e. all weight tensors in matmuls + embeddings decay, all biases and layernorms don't.
         decay_params = [p for n, p in param_dict.items() if p.dim() >= 2]
@@ -386,22 +436,7 @@ class GPT(nn.Module):
         optimizer = torch.optim.AdamW(optim_groups, lr=learning_rate, betas=betas, **extra_args)
         print(f"using fused AdamW: {use_fused}")
 
-        return optimizer
-    
-    def zeropower_via_newtonschulz5(G, steps=5):
-        assert G.ndim >= 2
-        a, b, c = (3.4445, -4.7750, 2.0315)
-        X = G.bfloat16()
-        if G.size(-2) > G.size(-1):
-            X = X.mT
-        X = X / (X.norm(dim=(-2,-1), keepdim=True) + 1e-7)
-        for _ in range(steps):
-            A = X @ X.mT
-            B = b * A + c * A @ A
-            X = a * X + B @ X
-        if G.size(-2) > G.size(-1):
-            X = X.mT
-        return X
+        return [optimizer]
 
     def estimate_mfu(self, fwdbwd_per_iter, dt):
         """ estimate model flops utilization (MFU) in units of the current GPU's bfloat16 peak FLOPS """
