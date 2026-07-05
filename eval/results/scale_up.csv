@@ -24,6 +24,8 @@ bl10m-rms-swiglu-rope-do0.1,512,8,33,0.1,random,10M,63.72,55.40,49.92,17.74,51.1
 bl10m-rms-swiglu-rope-do0.2,512,8,33,0.2,random,10M,64.02,54.88,49.53,13.78,51.13,46.67,9.80,4.64,4.1540,ours(measured)
 bl10m-d512L24-do0.1,512,24,83,0.1,shuffle,10M,65.17,55.02,49.61,17.24,51.01,47.61,9.57,4.63,4.0874,ours(R2 baseline)
 bl10m-d512L24-do0.1-gate,512,24,89,0.1,shuffle,10M,67.19,58.69,50.28,17.65,51.09,48.98,10.26,4.54,3.9025,ours(R2 gated-attn; reliable-4 56.81)
+muon-bl10m-d512L24-do0.1-gate,512,24,89,0.1,shuffle,10M,68.09,57.25,50.53,14.47,51.76,48.42,9.36,4.16,3.8181,ours(measured;Muon optimizer;vast 4x3090;reliable-4 56.91)
 bl10m-d512L32-do0.1,512,32,108,0.1,shuffle,10M,64.97,56.30,50.82,33.47,50.65,51.24,9.59,4.55,4.1042,ours(R2 baseline;entity draw high -> avg5 inflated)
 bl10m-d512L32-do0.1-gate,512,32,116,0.1,shuffle,10M,68.68,57.52,49.95,18.08,51.19,49.08,9.71,4.48,3.9016,ours(R2 gated-attn;entity draw low -> use reliable-4 56.84)
+muon-bl10m-d512L32-do0.1-gate,512,32,116,0.1,shuffle,10M,67.73,58.19,50.34,16.26,51.65,48.83,9.70,4.81,3.8468,ours(measured;Muon optimizer;vast 4x3090;reliable-4 56.98)
 Baseline-Strict-Small,768,12,98,n/a,native,10M,65.23,57.25,50.63,21.07,51.81,49.20,9.63,1.64,,ours(measured)
