@@ -29,6 +29,22 @@ HuggingFace model and runs zero-shot + GLUE evaluation on it.
 - converted models: `/media/volume/yupei-data/hf-models/<variant>`
 - eval data: `.../babylm-eval/strict/evaluation_data/{full_eval,fast_eval}`
 
+## Local fix to the official pipeline (apply after cloning)
+The official pipeline derives each run's results dir from the model name with
+`pathlib.Path(model_path).stem`, which truncates at the first dot — e.g.
+`bl100m-d512L32-do0.1-gate-s1338` → `bl100m-d512L32-do0`. Every `do0.x` variant then
+collides into one results dir: a *silent* overwrite (no error raised), which corrupts
+predictions when several models are evaluated in parallel. `patches/babylm-eval-model-name.patch`
+switches `.stem` → `.name` at the 6 model-path sites; it is **score-neutral** (only the
+output folder name changes, never a metric). Apply it to a fresh clone from the repo root:
+```bash
+cd /path/to/babylm-eval      # the official clone (contains strict/)
+git apply /path/to/nanoGPT/eval/patches/babylm-eval-model-name.patch
+```
+Patched files (under `strict/evaluation_pipeline/`): `sentence_zero_shot/run.py`,
+`reading/run.py`, `finetune/run.py`, `AoA_word/run.py`, `collate_preds.py`,
+`calculate_results_from_pred.py`.
+
 ## Run it
 ```bash
 # one variant, full zero-shot (blimp, supplement, ewok, entity_tracking, comps, reading)
