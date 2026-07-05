@@ -35,9 +35,11 @@ CKPT="$NANO_REPO/out-babylm/$VARIANT/ckpt.pt"
 [ -f "$CKPT" ] || { echo "no checkpoint: $CKPT" >&2; exit 1; }
 
 # 100M models use the 100M tokenizer; everything else uses the 10M tokenizer.
+# Match *bl100m-* (substring) so optimizer-prefixed names like muon-bl100m-* are
+# caught too; "bl100m" is not a substring of the 10M "bl10m", so 10M names are safe.
 case "$VARIANT" in
-  bl100m-*) TOK="$NANO_REPO/data/babylm_100m/tokenizer/bpe-16000.json" ;;
-  *)        TOK="$NANO_REPO/data/babylm/tokenizer/bpe-16000.json" ;;
+  *bl100m-*) TOK="$NANO_REPO/data/babylm_100m/tokenizer/bpe-16000.json" ;;
+  *)         TOK="$NANO_REPO/data/babylm/tokenizer/bpe-16000.json" ;;
 esac
 HFDIR="$HF_ROOT/$VARIANT"
 
