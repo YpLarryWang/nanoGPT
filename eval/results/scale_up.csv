@@ -17,6 +17,7 @@ bl100m-d512L32-do0.1-gate,512,32,116,0.1,shuffle,100M,77.79,65.76,56.29,30.98,57
 bl100m-d512L32-do0.1-gate-s1338,512,32,116,0.1,shuffle,100M,77.49,67.08,56.83,31.43,57.75,58.12,9.15,4.32,3.1968,ours(seed1338;gate 3-seed study)
 bl100m-d512L32-do0.1-gate-s1339,512,32,116,0.1,shuffle,100M,77.66,69.44,56.03,30.02,57.32,58.09,9.03,4.35,3.1990,ours(seed1339;gate 3-seed study)
 bl100m-d512L32-do0.1-gate-mean,512,32,116,0.1,shuffle,100M,77.65,67.43,56.38,30.81,57.55,57.96,9.00,4.29,3.1990,ours(3-seed mean s1337/8/9; std: avg5 0.25 reliable-4 0.38 BLiMP 0.15 supp 1.86 EWoK 0.41 entity 0.72 COMPS 0.22)
+muon-bl100m-d512L32-do0.1-gate,512,32,116,0.1,shuffle,100M,76.74,68.25,56.70,26.30,57.41,57.08,9.04,4.42,3.1955,ours(measured;Muon optimizer;vast 4x3090;reliable-4 64.78;AdamW-3seed-mean r4 64.75 val 3.1990 -> tie;single seed)
 bl100m-d768L10,768,10,83,0.0,shuffle,100M,72.28,59.67,53.16,30.41,56.90,54.48,8.89,4.64,3.3070,ours(measured)
 bl100m-d768L12,768,12,97,0.0,shuffle,100M,71.85,57.12,53.60,25.03,56.31,52.78,9.20,4.85,3.3029,ours(measured)
 Baseline-Strict,768,12,98,n/a,native,100M,74.73,65.00,54.37,23.58,55.85,54.71,10.54,3.32,,ours(measured)
