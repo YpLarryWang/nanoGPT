@@ -22,7 +22,7 @@ COLS = [
     "params_M", "dropout", "sampler",
     "blimp", "supplement", "ewok", "entity_tracking", "comps", "avg5", "reliable4",
     "reading_eye", "reading_selfpaced", "best_val_loss",
-    "boolq", "multirc", "rte", "wsc", "mrpc", "qqp", "mnli", "macro7",
+    "boolq", "multirc", "rte", "wsc", "mrpc", "qqp", "mnli", "macro7", "macro6",
     "eval_tok", "source",
 ]
 
@@ -70,7 +70,7 @@ load("glue.csv", {
     "arch": "arch", "train_words": "train_words",
     "boolq": "boolq_acc", "multirc": "multirc_acc", "rte": "rte_acc",
     "wsc": "wsc_acc", "mrpc": "mrpc_f1", "qqp": "qqp_f1", "mnli": "mnli_acc",
-    "macro7": "macro7",
+    "macro7": "macro7", "macro6": "macro6",
 })
 
 for r in runs.values():
