@@ -29,6 +29,7 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 from torch.distributed import init_process_group, destroy_process_group
 
 from model import GPTConfig, GPT
+from masked_data import MaskedData
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
@@ -67,7 +68,6 @@ use_swiglu=False
 swiglu_mult=8/3
 use_rope=False
 use_attn_gate=False
-use_muon = False
 
 # adamw optimizer
 learning_rate = 6e-4 # max learning rate
@@ -81,6 +81,14 @@ decay_lr = True # whether to decay the learning rate
 warmup_iters = 2000 # how many steps to warm up for
 lr_decay_iters = 600000 # should be ~= max_iters per Chinchilla
 min_lr = 6e-5 # minimum learning rate, should be ~= learning_rate/10 per Chinchilla
+
+# muon optimizer
+use_muon = False
+
+# training objective
+use_hybrid = False        # GPT-BERT hybrid objective: mix causal + masked microsteps
+causal_microsteps = 1     # causal microsteps per accumulation cycle; the rest run masked (ref = 1 of 16)
+
 # DDP settings
 backend = 'nccl' # 'nccl', 'gloo', etc.
 # system
@@ -196,8 +204,6 @@ best_val_loss = 1e9
 train_draw = 0     # next scheduled train batch on this rank (sampler='shuffle'; derived from iter_num)
 schedule = None    # ShuffleSchedule, built just before the training loop when sampler='shuffle'
 
-gpt_bert = False
-
 # attempt to derive vocab_size from the dataset
 meta_path = os.path.join(data_dir, 'meta.pkl')
 meta_vocab_size = None
@@ -207,11 +213,34 @@ if os.path.exists(meta_path):
     meta_vocab_size = meta['vocab_size']
     print(f"found vocab_size = {meta_vocab_size} (inside {meta_path})")
 
+# GPT-BERT hybrid objective: validate up front, then build the masked-batch source.
+# MASK_ID is the first id past the real tokens; random replacements are drawn from the real vocab.
+if use_hybrid:
+    assert not ddp, "hybrid v1 is single-GPU: the mix lives in the microsteps, not the ranks"
+    assert meta_vocab_size is not None and 'eot_id' in meta, "hybrid needs meta.pkl with vocab_size + eot_id"
+    assert 0 <= causal_microsteps <= gradient_accumulation_steps, "causal_microsteps out of range"
+
+    eot_id = meta['eot_id']
+    MASK_ID = meta_vocab_size
+    REAL_VOCAB = meta_vocab_size
+
+    mdata = MaskedData(
+        data_dir=data_dir,
+        block_size=block_size,
+        batch_size=batch_size,
+        device=device,
+        device_type=device_type,
+        eot_id=eot_id,
+        mask_id=MASK_ID,
+        real_vocab=REAL_VOCAB,
+    )
+
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, 
                   block_size=block_size, bias=bias, 
                   use_rmsnorm=use_rmsnorm, use_swiglu=use_swiglu, swiglu_mult=swiglu_mult, use_rope=use_rope, use_attn_gate=use_attn_gate,
                   vocab_size=None, dropout=dropout) # start with model_args from command line
+
 if init_from == 'scratch':
     # init a new model from scratch
     print("Initializing a new model from scratch")
@@ -219,7 +248,7 @@ if init_from == 'scratch':
     if meta_vocab_size is None:
         print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
     # model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
-    if gpt_bert:
+    if use_hybrid:
         model_args['vocab_size'] = (meta_vocab_size // 64 + 1) * 64   # 16064: room for MASK_ID=16000
     else:
         model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
@@ -231,6 +260,11 @@ elif init_from == 'resume':
     ckpt_path = os.path.join(out_dir, 'ckpt.pt')
     checkpoint = torch.load(ckpt_path, map_location=device)
     checkpoint_model_args = checkpoint['model_args']
+
+    if use_hybrid:
+        assert checkpoint_model_args['vocab_size'] > MASK_ID, \
+            "hybrid resume needs a hybrid-born ckpt (vocab must have room for MASK_ID)"
+
     # force these config attributes to be equal otherwise we can't even resume training
     # the rest of the attributes (e.g. dropout) can stay as desired from command line
     for k in ['n_layer', 'n_head', 'n_embd', 'block_size', 'bias', 'vocab_size', 'swiglu_mult']:
@@ -309,6 +343,16 @@ def estimate_loss():
                 logits, loss = model(X, Y)
             losses[k] = loss.item()
         out[split] = losses.mean()
+    if use_hybrid:
+        # Evaluate the masked objective even for the all-causal hybrid control.
+        # This is validation-only and does not mean masked batches entered training.
+        losses = torch.zeros(eval_iters)
+        for k in range(eval_iters):
+            X, Y = mdata.get_masked_batch('val')
+            with ctx:
+                _, loss = model(X, Y, is_causal=False)
+            losses[k] = loss.item()
+        out['val_masked'] = losses.mean()
     model.train()
     return out
 
@@ -347,7 +391,36 @@ elif sampler != 'random':
     raise ValueError(f"unknown sampler {sampler!r} (expected 'random' or 'shuffle')")
 
 # training loop
-X, Y = get_batch('train', scheduled=(sampler == 'shuffle')) # fetch the very first batch
+# fetch the very first batch
+if use_hybrid:
+    plan = [
+        m < causal_microsteps
+        for m in range(gradient_accumulation_steps)
+        ]
+    print(
+        f"hybrid plan: {sum(plan)} causal / {len(plan) - sum(plan)} masked per iter"
+    )
+    def fetch(causal_step):
+        global train_draw
+        sched = (sampler == 'shuffle')
+
+        if causal_step:
+            return get_batch(
+                'train',
+                scheduled=(sampler == 'shuffle')
+            )
+        else: # masked step
+            ix = None
+            if sched:
+                ix = torch.from_numpy(schedule.batch_starts(train_draw))
+                train_draw += 1
+            return mdata.get_masked_batch('train', ix=ix)
+    X, Y = fetch(plan[0])
+else:
+    X, Y = get_batch(
+        'train',
+        scheduled=(sampler == 'shuffle')
+    )
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
@@ -382,15 +455,19 @@ while True:
     if iter_num % eval_interval == 0 and master_process:
         losses = estimate_loss()
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
+
         if wandb_log:
-            wandb.log({
+            wandb_metrics = {
                 "iter": iter_num,
                 "tokens": iter_num * tokens_per_iter,   # cumulative tokens seen
                 "train/loss": losses['train'],
                 "val/loss": losses['val'],
                 "lr": lr,
-                "mfu": running_mfu*100, # convert to percentage
-            })
+                "mfu": running_mfu * 100, # convert to percentage
+            }
+            if use_hybrid:
+                wandb_metrics["val/masked_loss"] = losses["val_masked"]
+            wandb.log(wandb_metrics)
         if losses['val'] < best_val_loss or always_save_checkpoint:
             best_val_loss = losses['val']
             if iter_num > 0:
@@ -419,11 +496,32 @@ while True:
             # I really dislike that this bloats the code and forces us to repeat code
             # looking at the source of that context manager, it just toggles this variable
             model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
+
+        # Temporary routing probe: inspect the CURRENT X/Y batch
+        if use_hybrid and iter_num == 0:
+            print(
+                f"micro {micro_step}: "
+                f"{'causal' if plan[micro_step] else 'masked'}, "
+                f"supervised frac "
+                f"{(Y != -100).float().mean().item():.2f}"
+            )
+
         with ctx:
-            logits, loss = model(X, Y)
+            if use_hybrid:
+                logits, loss = model(X, Y, is_causal=plan[micro_step])
+            else:
+                logits, loss = model(X, Y)
             loss = loss / gradient_accumulation_steps # scale the loss to account for gradient accumulation
         # immediately async prefetch next batch while model is doing the forward pass on the GPU
-        X, Y = get_batch('train', scheduled=(sampler == 'shuffle'))
+        if use_hybrid:
+            next_step = (micro_step + 1) % gradient_accumulation_steps # the mod is only for the last step, micro_step+1 is out of bound what fetch batch for next formal step
+            X, Y = fetch(plan[next_step])
+        else:
+            X, Y = get_batch(
+                'train',
+                scheduled=(sampler == 'shuffle'),
+            )
+
         # backward pass, with gradient scaling if training in fp16
         scaler.scale(loss).backward()
     # clip the gradient
@@ -487,6 +585,12 @@ if master_process:  # only rank-0 writes, so a multi-GPU (DDP) run logs one line
         'mfu': round(running_mfu, 4),
         'wandb_id': wandb.run.id if wandb_log else None,
     }
+    if use_hybrid:
+        record['causal_microsteps'] = causal_microsteps
+        record['val_masked_loss'] = round(
+            final_metrics['val_masked'].item(),
+            4,
+        )
     os.makedirs('results', exist_ok=True)
     with open('results/experiments.jsonl', 'a') as f:        # APPEND by setting mode to 'a', never overwrite
         f.write(json.dumps(record) + '\n')
