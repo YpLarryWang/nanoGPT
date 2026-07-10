@@ -497,15 +497,6 @@ while True:
             # looking at the source of that context manager, it just toggles this variable
             model.require_backward_grad_sync = (micro_step == gradient_accumulation_steps - 1)
 
-        # Temporary routing probe: inspect the CURRENT X/Y batch
-        if use_hybrid and iter_num == 0:
-            print(
-                f"micro {micro_step}: "
-                f"{'causal' if plan[micro_step] else 'masked'}, "
-                f"supervised frac "
-                f"{(Y != -100).float().mean().item():.2f}"
-            )
-
         with ctx:
             if use_hybrid:
                 logits, loss = model(X, Y, is_causal=plan[micro_step])
