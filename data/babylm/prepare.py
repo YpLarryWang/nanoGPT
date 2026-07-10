@@ -96,7 +96,7 @@ def iter_token_ids(split_name):
 #         arr[idx: idx + used] = buf[:used]
 #         idx += used
         
-#     # # 防御性检查，确认第二遍写入数量和第一遍计数一致
+#     # # Defensive check to confirm that the number of writes in the second pass is consistent with the count in the first pass.
 #     # if idx != n_tokens:
 #     #     raise RuntimeError(
 #     #         f"{split_name}: wrote {idx} tokens, expected {n_tokens}"

@@ -41,3 +41,5 @@ lr_decay_iters = 466             # keep == max_iters (Chinchilla)
 min_lr = 6e-5
 warmup_iters = 40                # ~10% of 466 (scaled down from tinystories' 100)
 beta2 = 0.95
+
+use_muon = False
