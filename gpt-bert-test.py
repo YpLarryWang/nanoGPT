@@ -37,7 +37,7 @@ print("causal  Δ@pos0:", (lc[0, 0] - lc2[0, 0]).abs().max().item())   # expect 
 print("bidi    Δ@pos0:", (lb[0, 0] - lb2[0, 0]).abs().max().item())   # expect > 0
 
 
-md = MaskedData(data_dir='data/babylm', block_size=16, batch_size=8,
+md = MaskedData(data_dir='data/babylm', block_size=128, batch_size=16,
                 device=device, device_type=('cuda' if 'cuda' in device else 'cpu'),
                 eot_id=tokenizer.token_to_id(EOT_TEXT), mask_id=16000, real_vocab=16000)
 x, y = md.get_masked_batch('train')
@@ -53,3 +53,4 @@ big = GPT(GPTConfig(block_size=md.block_size, vocab_size=16064,
                     use_rmsnorm=True, use_swiglu=True, use_rope=True, use_attn_gate=True)
           ).to(device).eval()
 _, loss = big(x, targets=y, is_causal=False)
+print("masked loss:", loss.item())               # finite, ~9.68 = ln(16064) at init
