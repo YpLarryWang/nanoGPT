@@ -21,7 +21,12 @@ import torch
 
 HF_DIR = os.path.join(os.path.dirname(os.path.abspath(__file__)), "hf_nanogpt")
 sys.path.insert(0, HF_DIR)
-from modeling_nanogpt import NanoGPTConfig, NanoGPTForCausalLM, NanoGPTModel  # noqa: E402
+from modeling_nanogpt import (  # noqa: E402
+    NanoGPTConfig,
+    NanoGPTForCausalLM,
+    NanoGPTForMaskedLM,
+    NanoGPTModel,
+)
 
 from transformers import PreTrainedTokenizerFast  # noqa: E402
 
@@ -30,6 +35,7 @@ AUTO_MAP = {
     "AutoConfig": "modeling_nanogpt.NanoGPTConfig",
     "AutoModel": "modeling_nanogpt.NanoGPTModel",
     "AutoModelForCausalLM": "modeling_nanogpt.NanoGPTForCausalLM",
+    "AutoModelForMaskedLM": "modeling_nanogpt.NanoGPTForMaskedLM",
 }
 
 
@@ -43,6 +49,10 @@ def main():
     ap.add_argument("--tokenizer", required=True, help="path to the bpe-*.json tokenizers file")
     ap.add_argument("--out", required=True, help="output HF model directory")
     ap.add_argument("--dtype", default="float32", choices=["float32", "float16", "bfloat16"])
+    ap.add_argument(
+        "--bidirectional", action="store_true",
+        help="export the same weights with full bidirectional attention for MNTP/GLUE",
+    )
     args = ap.parse_args()
 
     ckpt = torch.load(args.ckpt, map_location="cpu", weights_only=False)
@@ -62,15 +72,17 @@ def main():
         swiglu_mult=margs.get("swiglu_mult", 8 / 3),
         use_rope=margs["use_rope"],
         use_attn_gate=margs.get("use_attn_gate", False),
+        bidirectional=args.bidirectional,
         tie_word_embeddings=True,
         bos_token_id=0,
         eos_token_id=0,
         pad_token_id=0,
-        architectures=["NanoGPTForCausalLM"],
+        architectures=["NanoGPTForMaskedLM" if args.bidirectional else "NanoGPTForCausalLM"],
     )
     config.auto_map = AUTO_MAP
 
-    model = NanoGPTForCausalLM(config)
+    model_cls = NanoGPTForMaskedLM if args.bidirectional else NanoGPTForCausalLM
+    model = model_cls(config)
     missing, unexpected = model.load_state_dict(state_dict, strict=False)
     missing = [m for m in missing if m != "lm_head.weight"]  # tied to wte; fine
     assert not missing, f"missing keys after load: {missing}"
@@ -91,6 +103,15 @@ def main():
     tok = PreTrainedTokenizerFast(tokenizer_file=args.tokenizer, eos_token=EOT, pad_token=EOT, add_prefix_space=True)
     eot_id = tok.convert_tokens_to_ids(EOT)
     assert eot_id == 0, f"expected {EOT} id 0, got {eot_id}"
+    if args.bidirectional:
+        # Hybrid training reserves the first id after the real tokenizer vocab
+        # for MASK_ID. Registering it here lets the official `mntp` backend
+        # construct exactly the corruption token seen during pretraining.
+        expected_mask_id = len(tok)
+        added = tok.add_special_tokens({"mask_token": "<|mask|>"})
+        assert added == 1, "bidirectional export expected to add one mask token"
+        assert tok.mask_token_id == expected_mask_id
+        assert tok.mask_token_id < margs["vocab_size"]
     if len(tok) != margs["vocab_size"]:
         print(f"WARNING: tokenizer size {len(tok)} != model vocab {margs['vocab_size']}")
     tok.save_pretrained(args.out)
@@ -98,7 +119,7 @@ def main():
     print(
         f"[ok] {args.out}  ({config.n_layer}L/{config.n_head}H/{config.n_embd}d "
         f"rms={config.use_rmsnorm} swiglu={config.use_swiglu} rope={config.use_rope} "
-        f"vocab={config.vocab_size} dtype={args.dtype})"
+        f"vocab={config.vocab_size} bidirectional={config.bidirectional} dtype={args.dtype})"
     )
 
 

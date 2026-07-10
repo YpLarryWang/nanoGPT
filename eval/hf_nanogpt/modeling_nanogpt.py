@@ -5,7 +5,8 @@ ablations: LayerNorm/RMSNorm x MLP/SwiGLU x learned-absolute/RoPE positions.
 This single file defines BOTH the config and the models so it can be copied verbatim
 into a model repo and loaded with `trust_remote_code=True` by the BabyLM 2026
 evaluation pipeline:
-  * AutoModelForCausalLM -> NanoGPTForCausalLM   (zero-shot: BLiMP/EWoK/COMPS/...)
+  * AutoModelForCausalLM -> NanoGPTForCausalLM   (causal zero-shot)
+  * AutoModelForMaskedLM -> NanoGPTForMaskedLM   (bidirectional MNTP zero-shot)
   * AutoModel            -> NanoGPTModel         (GLUE fine-tuning backbone)
 
 Module/parameter names mirror nanoGPT's model.py `GPT` exactly, so a nanoGPT
@@ -23,7 +24,7 @@ import torch.nn as nn
 from torch.nn import functional as F
 
 from transformers import GenerationMixin, PretrainedConfig, PreTrainedModel
-from transformers.modeling_outputs import BaseModelOutput, CausalLMOutput
+from transformers.modeling_outputs import BaseModelOutput, CausalLMOutput, MaskedLMOutput
 
 
 class NanoGPTConfig(PretrainedConfig):
@@ -50,6 +51,7 @@ class NanoGPTConfig(PretrainedConfig):
         swiglu_mult=8 / 3,
         use_rope=False,
         use_attn_gate=False,
+        bidirectional=False,
         rope_theta=10000.0,
         layer_norm_epsilon=1e-5,
         tie_word_embeddings=True,
@@ -67,6 +69,7 @@ class NanoGPTConfig(PretrainedConfig):
         self.swiglu_mult = swiglu_mult
         self.use_rope = use_rope
         self.use_attn_gate = use_attn_gate
+        self.bidirectional = bidirectional
         self.rope_theta = rope_theta
         self.layer_norm_epsilon = layer_norm_epsilon
         super().__init__(tie_word_embeddings=tie_word_embeddings, **kwargs)
@@ -139,6 +142,7 @@ class CausalSelfAttention(nn.Module):
         self.n_embd = config.n_embd
         self.dropout = config.dropout
         self.use_attn_gate = config.use_attn_gate
+        self.bidirectional = config.bidirectional
         if self.use_attn_gate:
             self.attn_gate = nn.Linear(config.n_embd, config.n_embd, bias=config.bias)
         self.use_rope = config.use_rope
@@ -162,15 +166,19 @@ class CausalSelfAttention(nn.Module):
 
         dropout_p = self.dropout if self.training else 0.0
         if attention_mask is None:
-            # dense fast-path -- numerically identical to nanoGPT training
+            # Dense causal is numerically identical to nanoGPT training. The
+            # bidirectional export uses the same weights with no triangular mask.
             y = F.scaled_dot_product_attention(
-                q, k, v, attn_mask=None, dropout_p=dropout_p, is_causal=True
+                q, k, v, attn_mask=None, dropout_p=dropout_p,
+                is_causal=not self.bidirectional,
             )
         else:
-            # combine causal + key-padding into a boolean (B, 1, T, T) mask
-            causal = torch.ones(T, T, dtype=torch.bool, device=x.device).tril()
             keep = attention_mask.to(torch.bool)[:, None, None, :]  # (B, 1, 1, T)
-            attn_mask = causal[None, None, :, :] & keep
+            if self.bidirectional:
+                attn_mask = keep
+            else:
+                causal = torch.ones(T, T, dtype=torch.bool, device=x.device).tril()
+                attn_mask = causal[None, None, :, :] & keep
             y = F.scaled_dot_product_attention(
                 q, k, v, attn_mask=attn_mask, dropout_p=dropout_p, is_causal=False
             )
@@ -328,3 +336,19 @@ class NanoGPTForCausalLM(NanoGPTPreTrainedModel, GenerationMixin):
                 ignore_index=-1,
             )
         return CausalLMOutput(loss=loss, logits=logits)
+
+
+class NanoGPTForMaskedLM(NanoGPTForCausalLM):
+    """Same LM head, with unshifted MLM loss for the bidirectional export."""
+
+    def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
+        x = _transformer_forward(self.transformer, self.config, input_ids, attention_mask)
+        logits = self.lm_head(x)
+        loss = None
+        if labels is not None:
+            loss = F.cross_entropy(
+                logits.reshape(-1, logits.size(-1)),
+                labels.reshape(-1),
+                ignore_index=-100,
+            )
+        return MaskedLMOutput(loss=loss, logits=logits)
