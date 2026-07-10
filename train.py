@@ -196,6 +196,8 @@ best_val_loss = 1e9
 train_draw = 0     # next scheduled train batch on this rank (sampler='shuffle'; derived from iter_num)
 schedule = None    # ShuffleSchedule, built just before the training loop when sampler='shuffle'
 
+gpt_bert = False
+
 # attempt to derive vocab_size from the dataset
 meta_path = os.path.join(data_dir, 'meta.pkl')
 meta_vocab_size = None
@@ -216,7 +218,11 @@ if init_from == 'scratch':
     # determine the vocab size we'll use for from-scratch training
     if meta_vocab_size is None:
         print("defaulting to vocab_size of GPT-2 to 50304 (50257 rounded up for efficiency)")
-    model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
+    # model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
+    if gpt_bert:
+        model_args['vocab_size'] = (meta_vocab_size // 64 + 1) * 64   # 16064: room for MASK_ID=16000
+    else:
+        model_args['vocab_size'] = meta_vocab_size if meta_vocab_size is not None else 50304
     gptconf = GPTConfig(**model_args)
     model = GPT(gptconf)
 elif init_from == 'resume':
