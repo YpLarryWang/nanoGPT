@@ -15,6 +15,12 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+def attn_res_mix(sources, q, norm):
+    # sources: list of [B,T,C] depth-sources; q: [C] pseudo-query; norm: RMSNorm — for KEYS only
+    V = torch.stack(sources)  # [S,B,T,C]
+    logits = torch.einsum('c,sbtc->sbt', q, norm(V))  # one logit per source per position
+    return torch.einsum('sbt,sbtc->btc', logits.softmax(dim=0), V)   # softmax over DEPTH = dim 0
+
 def make_norm(config):
     if config.use_rmsnorm:
         return RMSNorm(config.n_embd)
@@ -180,7 +186,7 @@ class SwiGLU(nn.Module):
 
 class Block(nn.Module):
 
-    def __init__(self, config):
+    def __init__(self, config, layer_idx):
         super().__init__()
         # self.ln_1 = LayerNorm(config.n_embd, bias=config.bias)
         self.ln_1 = make_norm(config)
@@ -189,12 +195,40 @@ class Block(nn.Module):
         self.ln_2 = make_norm(config)
         # self.mlp = MLP(config)
         self.mlp = make_mlp(config)
+        self.use_attn_res = config.use_attn_res
+        if config.use_attn_res:
+            # block_start: True iff sublayer 2·layer_idx opens a new block
+            self.block_start = (2 * layer_idx) % config.attn_res_block_size == 0
+            # pre-attn mix and pre-mlp mix need their own query and norm to control the mix, so here we define their module seperately
+            # for the pre-attn mix
+            self.attn_res_q1 = nn.Parameter(torch.zeros(config.n_embd)) # init q1 as all zeros
+            self.attn_res_norm1 = RMSNorm(config.n_embd)
+            # for the pre-MLP mix
+            self.attn_res_q2 = nn.Parameter(torch.zeros(config.n_embd)) # init q1 as all zeros
+            self.attn_res_norm2 = RMSNorm(config.n_embd)
 
     def forward(self, x, is_causal=True):
         x = x + self.attn(self.ln_1(x), is_causal)
         x = x + self.mlp(self.ln_2(x))
         return x
 
+    def forward_attn_res(self, blocks, partial, is_causal=True):
+        # pre-attn mix
+        # `blocks + [partial]` creates a new list, so `blocks` is not changed after this op
+        # this is because partial is not complete until a block ends, so append would mix completed block state and in-progress block state, very messy!
+        h = attn_res_mix(blocks + [partial], self.attn_res_q1, self.attn_res_norm1)
+        if self.block_start:
+            blocks = blocks + [partial]
+            partial = None
+            # when layer_idx=0, blocks=[] and partial=h_0 i.e. embedding--the only source, so there is no other sources to choose from
+        a = self.attn(self.ln_1(h), is_causal)
+        # update partial with attn output
+        partial = a if partial is None else partial + a
+        # pre-mlp mix
+        h = attn_res_mix(blocks + [partial], self.attn_res_q2, self.attn_res_norm2)
+        # update partial with mlp output
+        partial = partial + self.mlp(self.ln_2(h))
+        return blocks, partial
 
 def zeropower_via_newtonschulz5(G, steps=5):
     assert G.ndim >= 2
@@ -251,6 +285,8 @@ class GPTConfig:
     swiglu_mult: float = 8/3
     use_rope: bool = False
     use_attn_gate: bool = False # Qwen-style elementwise sigmoid gate on the attention output
+    use_attn_res: bool = False        # AttnRes (Kimi 2026): softmax attention over depth replaces the residual sum
+    attn_res_block_size: int = 2      # sublayers per block (attn+mlp = 2); 2 → one block per layer; L32 runs use 8
 
 class GPT(nn.Module):
 
@@ -264,7 +300,7 @@ class GPT(nn.Module):
             wte = nn.Embedding(config.vocab_size, config.n_embd),
             # wpe = nn.Embedding(config.block_size, config.n_embd),
             drop = nn.Dropout(config.dropout),
-            h = nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            h = nn.ModuleList([Block(config, i) for i in range(config.n_layer)]),
             # ln_f = LayerNorm(config.n_embd, bias=config.bias),
             ln_f = make_norm(config)
         ))
@@ -277,6 +313,15 @@ class GPT(nn.Module):
         
         if not config.use_rope:
             self.transformer.wpe = nn.Embedding(config.block_size, config.n_embd)
+        if config.use_attn_res:
+            # fail fast: attn_res_block_size even and ≥ 2; (2 * n_layer) % attn_res_block_size == 0
+            s = config.attn_res_block_size
+            assert s >= 2 and s % 2 == 0, f"attn_res_block_size must be even ≥2, got {s}"
+            assert (2 * config.n_layer) % s == 0, f"2·n_layer={2*config.n_layer} not divisible by {s}"
+            # there's another attres after all the blocks is done and right before the lm_head, aggregating all N block representations.
+            # `f` means final here, representing the last attres
+            self.attn_res_qf = nn.Parameter(torch.zeros(config.n_embd))
+            self.attn_res_normf = RMSNorm(config.n_embd)
 
         # init all weights
         self.apply(self._init_weights)
@@ -321,8 +366,14 @@ class GPT(nn.Module):
             pos = torch.arange(0, t, dtype=torch.long, device=device) # shape (t)
             pos_emb = self.transformer.wpe(pos) # position embeddings of shape (t, n_embd)
             x = self.transformer.drop(tok_emb + pos_emb)
-        for block in self.transformer.h:
-            x = block(x, is_causal)
+        if self.config.use_attn_res:
+            blocks, partial = [], x # x means embedding at the begining
+            for block in self.transformer.h:
+                blocks, partial = block.forward_attn_res(blocks, partial, is_causal)
+            x = attn_res_mix(blocks+[partial], self.attn_res_qf, self.attn_res_normf)
+        else:
+            for block in self.transformer.h:
+                x = block(x, is_causal)
         x = self.transformer.ln_f(x)
 
         if targets is not None:
