@@ -1,27 +1,27 @@
 #!/usr/bin/env bash
-# Single-GPU 10M mostly-causal GPT-BERT probes.
-# Usage: PY=/path/to/python CUDA_VISIBLE_DEVICES=N bash run_babylm_hybrid_10m_probe.sh {14|15}
+# Single-GPU 100M mostly-causal GPT-BERT probes, matched to the ratio study.
+# Usage: PY=/path/to/python CUDA_VISIBLE_DEVICES=N bash run_babylm_hybrid_100m_probe.sh {14|15}
 
 set -euo pipefail
 
-CAUSAL="${1:?usage: run_babylm_hybrid_10m_probe.sh 14-or-15}"
+CAUSAL="${1:?usage: run_babylm_hybrid_100m_probe.sh 14-or-15}"
 case "$CAUSAL" in
   14|15) ;;
   *) echo "expected 14 or 15 causal microsteps, got: $CAUSAL" >&2; exit 2 ;;
 esac
 
 PY="${PY:-python}"
-NAME="bl10m-d512L32-do0.1-gate-hyb${CAUSAL}of16-b32ga16"
+NAME="bl100m-d512L32-do0.1-gate-hyb${CAUSAL}of16-b32ga16"
 OUT="out-babylm/$NAME"
 
 [[ ! -e "$OUT" ]] || { echo "output already exists: $OUT" >&2; exit 1; }
 mkdir -p logs/hybrid
 
-echo "run=$NAME dataset=babylm causal=$CAUSAL masked=$((16-CAUSAL)) batch=32 grad_accum=16 eval_batch=32 seed=1337"
+echo "run=$NAME dataset=babylm_100m causal=$CAUSAL masked=$((16-CAUSAL)) batch=32 grad_accum=16 eval_batch=32 seed=1337"
 
 exec "$PY" train.py config/train_babylm.py \
-  --dataset=babylm \
-  --max_iters=466 --lr_decay_iters=466 --warmup_iters=40 --eval_interval=50 \
+  --dataset=babylm_100m \
+  --max_iters=4740 --lr_decay_iters=4740 --warmup_iters=100 --eval_interval=500 \
   --use_rmsnorm=True --use_swiglu=True --use_rope=True --use_attn_gate=True \
   --use_attn_res=False --use_muon=False \
   --sampler=shuffle --sampler_seed=1337 --dropout=0.1 \
