@@ -11,6 +11,8 @@ set -euo pipefail
 LR="${1:?usage: run_muon_lr_pilot.sh <learning-rate> [lr-tag]}"
 LR_TAG="${2:-lr${LR}}"
 : "${MNLI_BSZ:=32}"
+: "${TASK_SET:=all}"
+: "${MULTIRC_GA:=1}"
 
 : "${DATA:=/workspace}"
 : "${NANO_REPO:=$DATA/nanoGPT}"
@@ -42,21 +44,24 @@ fi
 
 echo "pilot_start=$(date --iso-8601=seconds) variant=$VARIANT lr=$LR lr_tag=$LR_TAG gpu=${CUDA_VISIBLE_DEVICES:-unset} seed=42"
 echo "fixed_config=adamw beta1=0.9 beta2=0.999 eps=1e-8 weight_decay=0.01 warmup=0.06 scheduler=cosine"
-echo "tasks=mnli:e10:b${MNLI_BSZ},qqp:e10:b16,rte:e10:b16,multirc:e5:b16"
+echo "task_set=$TASK_SET tasks=mnli:e10:b${MNLI_BSZ}:ga1,qqp:e10:b16:ga1,rte:e10:b16:ga1,multirc:e5:b16:ga${MULTIRC_GA}"
 
 run_task () {
-  local TASK="$1" LABELS="$2" BSZ="$3" EPOCHS="$4" SELECT_METRIC="$5"
-  shift 5
+  local TASK="$1" LABELS="$2" BSZ="$3" EPOCHS="$4" SELECT_METRIC="$5" GA="$6"
+  shift 6
   local METRICS=("$@")
   local OUT="$RESULTS_ROOT/$VARIANT/main/finetune/$TASK"
-  local EXP_NAME="${VARIANT}-ftadamw-${LR_TAG}-${TASK}-b${BSZ}-e${EPOCHS}-s42"
+  local MICRO_BSZ=$((BSZ / GA))
+  local EXP_NAME="${VARIANT}-ftadamw-${LR_TAG}-${TASK}-eb${BSZ}-mb${MICRO_BSZ}-ga${GA}-e${EPOCHS}-s42"
+
+  (( BSZ % GA == 0 )) || { echo "error: batch $BSZ not divisible by GA $GA" >&2; return 1; }
 
   if [[ -e "$OUT" ]]; then
     echo "error: existing pilot output: $OUT" >&2
     return 1
   fi
 
-  echo "task_start=$(date --iso-8601=seconds) task=$TASK lr=$LR batch=$BSZ epochs=$EPOCHS"
+  echo "task_start=$(date --iso-8601=seconds) task=$TASK lr=$LR effective_batch=$BSZ microbatch=$MICRO_BSZ ga=$GA epochs=$EPOCHS"
   PYTHONUNBUFFERED=1 "$PY" -m evaluation_pipeline.finetune.run \
     --model_name_or_path "$HFDIR" \
     --train_data "evaluation_data/full_eval/glue_filtered/$TASK.train.jsonl" \
@@ -65,6 +70,7 @@ run_task () {
     --task "$TASK" \
     --num_labels "$LABELS" \
     --batch_size "$BSZ" \
+    --gradient_accumulation "$GA" \
     --learning_rate "$LR" \
     --num_epochs "$EPOCHS" \
     --sequence_length 512 \
@@ -80,10 +86,21 @@ run_task () {
   echo "task_finish=$(date --iso-8601=seconds) task=$TASK"
 }
 
-run_task mnli    3 "$MNLI_BSZ" 10 accuracy accuracy
-run_task qqp     2 16 10 f1       accuracy f1 mcc
-run_task rte     2 16 10 accuracy accuracy f1 mcc
-run_task multirc 2 16 5  accuracy accuracy f1 mcc
+case "$TASK_SET" in
+  all)
+    run_task mnli    3 "$MNLI_BSZ" 10 accuracy 1 accuracy
+    run_task qqp     2 16 10 f1       1 accuracy f1 mcc
+    run_task rte     2 16 10 accuracy 1 accuracy f1 mcc
+    run_task multirc 2 16 5  accuracy "$MULTIRC_GA" accuracy f1 mcc
+    ;;
+  multirc)
+    run_task multirc 2 16 5 accuracy "$MULTIRC_GA" accuracy f1 mcc
+    ;;
+  *)
+    echo "error: TASK_SET must be all or multirc, got $TASK_SET" >&2
+    exit 2
+    ;;
+esac
 
 touch "$NANO_REPO/results/${VARIANT}.ftlrpilot.${LR_TAG}.done"
 echo "pilot_finish=$(date --iso-8601=seconds) variant=$VARIANT lr=$LR"
