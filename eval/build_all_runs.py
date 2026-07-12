@@ -20,6 +20,9 @@ HERE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "results")
 COLS = [
     "run_name", "optimizer", "gate", "arch", "train_words", "n_embd", "n_layer",
     "params_M", "dropout", "sampler",
+    "pretrain_batch_size", "pretrain_grad_accum", "tokens_per_update",
+    "eval_batch_size", "eval_iters", "val_tokens_per_eval", "seed", "sampler_seed",
+    "wandb_id", "metadata_source",
     "blimp", "supplement", "ewok", "entity_tracking", "comps", "avg5", "reliable4",
     "reading_eye", "reading_selfpaced", "best_val_loss",
     "boolq", "multirc", "rte", "wsc", "mrpc", "qqp", "mnli", "macro7", "macro6",
@@ -71,6 +74,15 @@ load("glue.csv", {
     "boolq": "boolq_acc", "multirc": "multirc_acc", "rte": "rte_acc",
     "wsc": "wsc_acc", "mrpc": "mrpc_f1", "qqp": "qqp_f1", "mnli": "mnli_acc",
     "macro7": "macro7", "macro6": "macro6",
+})
+load("training_metadata.csv", {
+    "pretrain_batch_size": "pretrain_batch_size",
+    "pretrain_grad_accum": "pretrain_grad_accum",
+    "tokens_per_update": "tokens_per_update",
+    "eval_batch_size": "eval_batch_size", "eval_iters": "eval_iters",
+    "val_tokens_per_eval": "val_tokens_per_eval", "seed": "seed",
+    "sampler_seed": "sampler_seed", "wandb_id": "wandb_id",
+    "metadata_source": "metadata_source",
 })
 
 for r in runs.values():

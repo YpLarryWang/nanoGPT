@@ -29,6 +29,10 @@ Our headline story: a 33M model matching/apporaching a 98M GPT-2 at ~1/3 the par
   side (which drops the noisy `entity_tracking`). It can change conclusions: on `macro7` our 116M
   champion `bl100m-d512L32-do0.1-gate` trails Baseline-Strict (68.16 vs 68.86 — the gap is
   *entirely* WSC), but on `macro6` it edges ahead (68.94 vs 68.80).
+- `training_metadata.csv` — one row per scored run with the pretraining microbatch,
+  gradient accumulation, tokens per optimizer update, validation sampling budget, seeds,
+  and W&B ID. It is generated from `results/experiments.jsonl` plus W&B and joined into
+  `all_runs.csv`; blanks mean the metadata is unavailable (e.g. external baselines).
 
 ## `source` column
 - `ours(measured)` — run by us through the official pipeline. **Every row (both baselines

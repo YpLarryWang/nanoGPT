@@ -45,4 +45,7 @@ bl100m-d512L32-do0.1-gate-hyb8of16,512,32,116,0.1,shuffle,100M,76.16,60.86,54.84
 bl100m-d512L32-do0.1-gate-hyb16of16,512,32,116,0.1,shuffle,100M,76.80,69.39,55.02,34.38,57.38,58.59,9.12,3.88,3.1885,ours(measured;hybrid-path all-causal control;seed1337;vocab16064;reliable-4 64.65)
 bl100m-d512L32-do0.1-gate-hyb1of16-bidir,512,32,116,0.1,shuffle,100M,73.67,65.32,52.26,39.33,54.96,57.11,7.80,4.21,3.5436,ours(measured;same hyb1of16 checkpoint;bidirectional attention;MNTP zero-shot;seed1337;vocab16064;reliable-4 61.55)
 Baseline-Strict-Small,768,12,98,n/a,native,10M,65.23,57.25,50.63,21.07,51.81,49.20,9.63,1.64,,ours(measured)
-bl10m-d512L32-do0.1-gate-attnres8,512,32,116,0.1,shuffle,10M,68.71,53.73,50.03,17.36,51.30,48.23,9.54,4.30,3.8584,ours(measured;AttnRes block8;jetstream A100 MIG;reliable-4 55.94;2026-07-12)
+bl10m-d512L32-do0.1-gate-attnres8,512,32,116,0.1,shuffle,10M,68.71,53.73,50.03,17.36,51.30,48.23,9.54,4.30,3.8584,ours(measured;AttnRes block8;B8/GA64;jetstream A100 MIG;reliable-4 55.94;2026-07-12)
+bl10m-d512L12-h4-do0.1-gate,512,12,49,0.1,shuffle,10M,67.00,55.70,49.01,17.52,50.82,48.01,9.41,4.64,3.9134,ours(measured;Kimi-ratio matched baseline;B8/GA64;seed1337;reliable-4 55.63;2026-07-12)
+bl10m-d512L12-h4-do0.1-gate-attnres4,512,12,49,0.1,shuffle,10M,67.11,55.19,49.61,32.33,51.11,51.07,9.38,4.44,3.8963,ours(measured;Kimi-ratio AttnRes4;B8/GA64;seed1337;entity high -> use reliable-4 55.76;2026-07-12)
+bl10m-d512L32-do0.1-gate-aoa19,512,32,116,0.1,shuffle,10M,67.85,54.04,49.51,21.14,50.73,48.65,9.42,3.99,3.9191,ours(measured;AoA19 retrain;B8/GA64;seed1337;reliable-4 55.53;2026-07-12)
