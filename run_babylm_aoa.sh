@@ -6,12 +6,12 @@ set -euo pipefail
 
 TRACK="${1:?usage: run_babylm_aoa.sh 10m-or-100m}"
 PY="${PY:-python}"
-B="${B:-8}"
-GA="${GA:-64}"
+B=32
+GA=16
 
 case "$TRACK" in
   10m)
-    NAME=bl10m-d512L32-do0.1-gate-aoa19
+    NAME=bl10m-d512L32-do0.1-gate-aoa19-b32ga16
     DATASET=babylm
     MAX_ITERS=466
     WARMUP_ITERS=40
@@ -20,7 +20,7 @@ case "$TRACK" in
     SAVE_ITERS='[5,9,14,19,23,28,33,37,42,47,93,140,186,233,280,326,373,419,466]'
     ;;
   100m)
-    NAME=bl100m-d512L32-do0.1-gate-aoa28
+    NAME=bl100m-d512L32-do0.1-gate-aoa28-b32ga16
     DATASET=babylm_100m
     MAX_ITERS=4740
     WARMUP_ITERS=100
@@ -35,7 +35,7 @@ case "$TRACK" in
 esac
 
 mkdir -p logs/aoa
-echo "run=$NAME dataset=$DATASET batch=$B grad_accum=$GA seed=1337 save_count=$SAVE_COUNT"
+echo "run=$NAME dataset=$DATASET batch=$B grad_accum=$GA eval_batch=32 seed=1337 save_count=$SAVE_COUNT"
 
 exec "$PY" train.py config/train_babylm.py \
   --dataset="$DATASET" \
@@ -47,6 +47,7 @@ exec "$PY" train.py config/train_babylm.py \
   --sampler=shuffle --dropout=0.1 \
   --n_embd=512 --n_layer=32 --n_head=8 \
   --batch_size="$B" --gradient_accumulation_steps="$GA" \
+  --eval_batch_size=32 \
   --seed=1337 --sampler_seed=1337 \
   --wandb_log=True --wandb_project=babylm \
   --wandb_run_name="$NAME" --out_dir="out-babylm/$NAME"

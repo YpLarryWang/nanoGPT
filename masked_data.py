@@ -37,11 +37,12 @@ class MaskedData:
                 flag[b, i:i+s] = True
         return flag
         
-    def get_masked_batch(self, split, ix=None):
+    def get_masked_batch(self, split, ix=None, batch_size_override=None):
         """ix: (B,) window starts. None -> i.i.d. draw. The caller passes ix when it owns a sampling schedule, so the shared draw counter stays in one place (train.py)."""
         data = np.memmap(os.path.join(self.data_dir, 'train.bin' if split=='train' else 'val.bin'), dtype=np.uint16, mode='r')
         if ix is None:
-            ix = torch.randint(len(data) - self.block_size - 1, (self.batch_size, ))
+            B = self.batch_size if batch_size_override is None else batch_size_override
+            ix = torch.randint(len(data) - self.block_size - 1, (B, ))
         buf = torch.stack([
                 torch.from_numpy(data[i:i+self.block_size+1].astype(np.int64)) for i in ix
             ]) # (B, T+1)

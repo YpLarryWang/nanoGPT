@@ -91,13 +91,13 @@ def main():
             config.get("gradient_accumulation_steps"), exp.get("grad_accum")
         )
         block_size = first(config.get("block_size"), exp.get("block_size"))
-        eval_batch = first(config.get("eval_batch_size"), batch)
-        eval_iters = first(config.get("eval_iters"), 50 if batch != "" else "")
+        eval_batch = first(config.get("eval_batch_size"), exp.get("eval_batch_size"), batch)
+        eval_iters = first(config.get("eval_iters"), exp.get("eval_iters"), 50 if batch != "" else "")
         tokens = first(exp.get("tokens_per_iter"))
         if tokens == "" and all(v != "" for v in (batch, grad_accum, block_size)):
             tokens = int(batch) * int(grad_accum) * int(block_size)
-        val_tokens = ""
-        if all(v != "" for v in (eval_batch, eval_iters, block_size)):
+        val_tokens = first(exp.get("val_tokens_per_eval"))
+        if val_tokens == "" and all(v != "" for v in (eval_batch, eval_iters, block_size)):
             val_tokens = int(eval_batch) * int(eval_iters) * int(block_size)
         source = "+".join(
             part for part, present in (

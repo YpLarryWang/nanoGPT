@@ -8,6 +8,7 @@
 out_dir = 'out-babylm'
 eval_interval = 50
 eval_iters = 50
+eval_batch_size = 32  # fixed validation budget across pretraining microbatch choices
 log_interval = 10
 
 always_save_checkpoint = False   # keep only the best-val checkpoint per run

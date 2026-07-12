@@ -50,6 +50,7 @@ wandb_run_name = 'gpt2' # 'run' + str(time.time())
 dataset = 'openwebtext'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
 batch_size = 12 # if gradient_accumulation_steps > 1, this is the micro-batch size
+eval_batch_size = -1 # <=0 follows batch_size; formal BabyLM runs fix this independently
 block_size = 1024
 # data sampling: 'random' = nanoGPT i.i.d. windows (with replacement); 'shuffle' = deterministic
 # shuffled-epoch schedule (each token seen once/epoch, per-epoch offset jitter, DDP-correct,
@@ -101,6 +102,10 @@ compile = True # use PyTorch 2.0 to compile the model to be faster
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # re-read the values (for wandb), will be useful for logging
+if eval_batch_size <= 0:
+    eval_batch_size = batch_size
+config['eval_batch_size'] = eval_batch_size
+assert eval_batch_size > 0
 # -----------------------------------------------------------------------------
 
 # various inits, derived attributes, I/O setup
@@ -178,19 +183,21 @@ class ShuffleSchedule:
         assert i + self.B <= len(self.sched), "shuffle schedule exhausted -- increase slack"
         return self.sched[i:i + self.B]
 
-def get_batch(split, scheduled=False):
+def get_batch(split, scheduled=False, batch_size_override=None):
     # We recreate np.memmap every batch to avoid a memory leak, as per
     # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
     if split == 'train':
         data = np.memmap(os.path.join(data_dir, 'train.bin'), dtype=np.uint16, mode='r')
     else:
         data = np.memmap(os.path.join(data_dir, 'val.bin'), dtype=np.uint16, mode='r')
+    B = batch_size if batch_size_override is None else batch_size_override
     if scheduled:                                    # sampler='shuffle' training fetch (exact epochs)
+        assert B == batch_size, "scheduled training batches use the configured microbatch size"
         global train_draw
         ix = torch.from_numpy(schedule.batch_starts(train_draw))
         train_draw += 1
     else:                                            # nanoGPT i.i.d. windows (with replacement)
-        ix = torch.randint(len(data) - block_size, (batch_size,))
+        ix = torch.randint(len(data) - block_size, (B,))
     x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
     y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
     if device_type == 'cuda':
@@ -351,7 +358,7 @@ def estimate_loss():
     for split in ['train', 'val']:
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
-            X, Y = get_batch(split)
+            X, Y = get_batch(split, batch_size_override=eval_batch_size)
             with ctx:
                 logits, loss = model(X, Y)
             losses[k] = loss.item()
@@ -361,7 +368,7 @@ def estimate_loss():
         # This is validation-only and does not mean masked batches entered training.
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
-            X, Y = mdata.get_masked_batch('val')
+            X, Y = mdata.get_masked_batch('val', batch_size_override=eval_batch_size)
             with ctx:
                 _, loss = model(X, Y, is_causal=False)
             losses[k] = loss.item()
@@ -580,6 +587,9 @@ if master_process:  # only rank-0 writes, so a multi-GPU (DDP) run logs one line
         'params_M': round(raw_model.get_num_params() / 1e6, 2),
         'batch_size': batch_size, 'grad_accum': gradient_accumulation_steps,
         'tokens_per_iter': tokens_per_iter,
+        'eval_batch_size': eval_batch_size, 'eval_iters': eval_iters,
+        'val_tokens_per_eval': eval_batch_size * eval_iters * block_size,
+        'seed': seed, 'sampler_seed': sampler_seed,
         'max_iters': max_iters, 'final_iter': iter_num,
         'total_tokens': iter_num * tokens_per_iter,
         'learning_rate': learning_rate, 'min_lr': min_lr, 'warmup_iters': warmup_iters,
