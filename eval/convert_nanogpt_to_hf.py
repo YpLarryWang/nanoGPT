@@ -72,6 +72,8 @@ def main():
         swiglu_mult=margs.get("swiglu_mult", 8 / 3),
         use_rope=margs["use_rope"],
         use_attn_gate=margs.get("use_attn_gate", False),
+        use_attn_res=margs.get("use_attn_res", False),
+        attn_res_block_size=margs.get("attn_res_block_size", 2),
         bidirectional=args.bidirectional,
         tie_word_embeddings=True,
         bos_token_id=0,
@@ -119,6 +121,7 @@ def main():
     print(
         f"[ok] {args.out}  ({config.n_layer}L/{config.n_head}H/{config.n_embd}d "
         f"rms={config.use_rmsnorm} swiglu={config.use_swiglu} rope={config.use_rope} "
+        f"attnres={config.use_attn_res} attnres_size={config.attn_res_block_size} "
         f"vocab={config.vocab_size} bidirectional={config.bidirectional} dtype={args.dtype})"
     )
 

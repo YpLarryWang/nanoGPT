@@ -51,6 +51,8 @@ class NanoGPTConfig(PretrainedConfig):
         swiglu_mult=8 / 3,
         use_rope=False,
         use_attn_gate=False,
+        use_attn_res=False,
+        attn_res_block_size=2,
         bidirectional=False,
         rope_theta=10000.0,
         layer_norm_epsilon=1e-5,
@@ -69,6 +71,8 @@ class NanoGPTConfig(PretrainedConfig):
         self.swiglu_mult = swiglu_mult
         self.use_rope = use_rope
         self.use_attn_gate = use_attn_gate
+        self.use_attn_res = use_attn_res
+        self.attn_res_block_size = attn_res_block_size
         self.bidirectional = bidirectional
         self.rope_theta = rope_theta
         self.layer_norm_epsilon = layer_norm_epsilon
@@ -104,6 +108,13 @@ def make_norm(config):
     if config.use_rmsnorm:
         return RMSNorm(config.n_embd, eps=config.layer_norm_epsilon)
     return LayerNorm(config.n_embd, bias=config.bias, eps=config.layer_norm_epsilon)
+
+
+def attn_res_mix(sources, q, norm):
+    """Softmax attention over depth; normed keys and raw values, matching nanoGPT."""
+    values = torch.stack(sources)
+    logits = torch.einsum("c,sbtc->sbt", q, norm(values))
+    return torch.einsum("sbt,sbtc->btc", logits.softmax(dim=0), values)
 
 
 # ---------------------------------------------------------------------------- rope
@@ -224,17 +235,35 @@ def make_mlp(config):
 
 
 class Block(nn.Module):
-    def __init__(self, config):
+    def __init__(self, config, layer_idx):
         super().__init__()
         self.ln_1 = make_norm(config)
         self.attn = CausalSelfAttention(config)
         self.ln_2 = make_norm(config)
         self.mlp = make_mlp(config)
+        self.use_attn_res = config.use_attn_res
+        if config.use_attn_res:
+            self.block_start = (2 * layer_idx) % config.attn_res_block_size == 0
+            self.attn_res_q1 = nn.Parameter(torch.zeros(config.n_embd))
+            self.attn_res_norm1 = RMSNorm(config.n_embd)
+            self.attn_res_q2 = nn.Parameter(torch.zeros(config.n_embd))
+            self.attn_res_norm2 = RMSNorm(config.n_embd)
 
     def forward(self, x, attention_mask=None):
         x = x + self.attn(self.ln_1(x), attention_mask)
         x = x + self.mlp(self.ln_2(x))
         return x
+
+    def forward_attn_res(self, blocks, partial, attention_mask=None):
+        h = attn_res_mix(blocks + [partial], self.attn_res_q1, self.attn_res_norm1)
+        if self.block_start:
+            blocks = blocks + [partial]
+            partial = None
+        attn_out = self.attn(self.ln_1(h), attention_mask)
+        partial = attn_out if partial is None else partial + attn_out
+        h = attn_res_mix(blocks + [partial], self.attn_res_q2, self.attn_res_norm2)
+        partial = partial + self.mlp(self.ln_2(h))
+        return blocks, partial
 
 
 # ---------------------------------------------------------------- shared backbone
@@ -243,7 +272,7 @@ def _build_transformer(config):
         dict(
             wte=nn.Embedding(config.vocab_size, config.n_embd),
             drop=nn.Dropout(config.dropout),
-            h=nn.ModuleList([Block(config) for _ in range(config.n_layer)]),
+            h=nn.ModuleList([Block(config, i) for i in range(config.n_layer)]),
             ln_f=make_norm(config),
         )
     )
@@ -252,7 +281,17 @@ def _build_transformer(config):
     return transformer
 
 
-def _transformer_forward(transformer, config, input_ids, attention_mask):
+def _init_attn_res(model, config):
+    if not config.use_attn_res:
+        return
+    size = config.attn_res_block_size
+    assert size >= 2 and size % 2 == 0
+    assert (2 * config.n_layer) % size == 0
+    model.attn_res_qf = nn.Parameter(torch.zeros(config.n_embd))
+    model.attn_res_normf = RMSNorm(config.n_embd)
+
+
+def _transformer_forward(model, transformer, config, input_ids, attention_mask):
     _, t = input_ids.size()
     tok_emb = transformer.wte(input_ids)
     if config.use_rope:
@@ -260,8 +299,14 @@ def _transformer_forward(transformer, config, input_ids, attention_mask):
     else:
         pos = torch.arange(0, t, dtype=torch.long, device=input_ids.device)
         x = transformer.drop(tok_emb + transformer.wpe(pos))
-    for block in transformer.h:
-        x = block(x, attention_mask)
+    if config.use_attn_res:
+        blocks, partial = [], x
+        for block in transformer.h:
+            blocks, partial = block.forward_attn_res(blocks, partial, attention_mask)
+        x = attn_res_mix(blocks + [partial], model.attn_res_qf, model.attn_res_normf)
+    else:
+        for block in transformer.h:
+            x = block(x, attention_mask)
     x = transformer.ln_f(x)
     return x
 
@@ -289,6 +334,7 @@ class NanoGPTModel(NanoGPTPreTrainedModel):
     def __init__(self, config):
         super().__init__(config)
         self.transformer = _build_transformer(config)
+        _init_attn_res(self, config)
         self.post_init()
 
     def get_input_embeddings(self):
@@ -298,7 +344,7 @@ class NanoGPTModel(NanoGPTPreTrainedModel):
         self.transformer.wte = value
 
     def forward(self, input_ids=None, attention_mask=None, **kwargs):
-        x = _transformer_forward(self.transformer, self.config, input_ids, attention_mask)
+        x = _transformer_forward(self, self.transformer, self.config, input_ids, attention_mask)
         return BaseModelOutput(last_hidden_state=x)
 
 
@@ -311,6 +357,7 @@ class NanoGPTForCausalLM(NanoGPTPreTrainedModel, GenerationMixin):
         super().__init__(config)
         self.transformer = _build_transformer(config)
         self.lm_head = nn.Linear(config.n_embd, config.vocab_size, bias=False)
+        _init_attn_res(self, config)
         self.post_init()
 
     def get_input_embeddings(self):
@@ -326,7 +373,7 @@ class NanoGPTForCausalLM(NanoGPTPreTrainedModel, GenerationMixin):
         self.lm_head = value
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
-        x = _transformer_forward(self.transformer, self.config, input_ids, attention_mask)
+        x = _transformer_forward(self, self.transformer, self.config, input_ids, attention_mask)
         logits = self.lm_head(x)
         loss = None
         if labels is not None:
@@ -342,7 +389,7 @@ class NanoGPTForMaskedLM(NanoGPTForCausalLM):
     """Same LM head, with unshifted MLM loss for the bidirectional export."""
 
     def forward(self, input_ids=None, attention_mask=None, labels=None, **kwargs):
-        x = _transformer_forward(self.transformer, self.config, input_ids, attention_mask)
+        x = _transformer_forward(self, self.transformer, self.config, input_ids, attention_mask)
         logits = self.lm_head(x)
         loss = None
         if labels is not None:
