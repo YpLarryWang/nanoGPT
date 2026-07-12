@@ -18,7 +18,10 @@ VARIANT="${SOURCE}-bidir"
 
 CKPT="$NANO_REPO/out-babylm/$SOURCE/ckpt.pt"
 HFDIR="$HF_ROOT/$VARIANT"
-TOK="$NANO_REPO/data/babylm_100m/tokenizer/bpe-16000.json"
+case "$SOURCE" in
+  *bl100m-*) TOK="$NANO_REPO/data/babylm_100m/tokenizer/bpe-16000.json" ;;
+  *)         TOK="$NANO_REPO/data/babylm/tokenizer/bpe-16000.json" ;;
+esac
 RESULT_DIR="$EVAL_REPO/results/$VARIANT"
 
 [[ -f "$CKPT" ]] || { echo "no checkpoint: $CKPT" >&2; exit 1; }
