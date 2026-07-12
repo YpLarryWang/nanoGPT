@@ -21,13 +21,20 @@ Our headline story: a 33M model matching/apporaching a 98M GPT-2 at ~1/3 the par
   `eval_tok` = which tokenizer produced each row's numbers — see **Tokenizer fix** below.
 - `glue.csv` — GLUE fine-tuning, reported with the **official per-task metric**:
   boolq / multirc / rte / wsc / mnli = **accuracy**; mrpc / qqp = **F1** (all %).
-  `macro7` = mean of the seven task scores.
+  `macro7` = mean of the seven task scores. `macro6` = mean of the six **excluding WSC**.
+  WSC (Winograd coreference; only 554 train / ~104 dev examples) is too small and too hard to
+  learn by fine-tuning at BabyLM scale, so every model collapses to the **majority class**
+  (≈**63.46 % = 66/104**; minority-class F1 ≈ 0) — a near-constant that reflects the class prior,
+  not model quality. `macro6` drops it, and is the GLUE analog of `reliable-4` on the zero-shot
+  side (which drops the noisy `entity_tracking`). It can change conclusions: on `macro7` our 116M
+  champion `bl100m-d512L32-do0.1-gate` trails Baseline-Strict (68.16 vs 68.86 — the gap is
+  *entirely* WSC), but on `macro6` it edges ahead (68.94 vs 68.80).
 
 ## `source` column
 - `ours(measured)` — run by us through the official pipeline. **Every row (both baselines
   included) is now our own measured number**, so all comparisons are apples-to-apples. Our
   measured baselines reproduce the official model cards closely (Strict blimp 74.73 vs 74.53;
-  GLUE within ~1–2 pts) and additionally provide EWoK / WSC / avg5 / macro7, which the cards omit.
+  GLUE within ~1–2 pts) and additionally provide EWoK / WSC / avg5 / macro7 / macro6, which the cards omit.
 
 ## Tokenizer fix (reading scores) — and the `eval_tok` column
 `reading_*` read ~0 for every nanoGPT variant (winner 0.24 / 0.10) while the GPT-2 baselines

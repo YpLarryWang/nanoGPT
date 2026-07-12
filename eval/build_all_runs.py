@@ -95,7 +95,7 @@ def sort_key(name):
     return (is_base, track, p, name)
 
 with open(os.path.join(HERE, "all_runs.csv"), "w", newline="") as f:
-    w = csv.DictWriter(f, fieldnames=COLS)
+    w = csv.DictWriter(f, fieldnames=COLS, lineterminator="\n")
     w.writeheader()
     for name in sorted(order, key=sort_key):
         w.writerow(runs[name])

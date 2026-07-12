@@ -12,3 +12,7 @@ bl100m-d512L32-do0.1-gate,RMS+SwiGLU(8/3)+RoPE+gate,100M,70.95,60.64,64.03,63.46
 bl100m-d512L24-do0.1-gate,RMS+SwiGLU(8/3)+RoPE+gate,100M,69.79,59.82,61.87,63.46,85.03,71.72,60.84,67.51,68.18,ours(measured;AdamW;vast 4x3090;seed42;HF relayed from jetstream;clean L24 ref for muon)
 muon-bl100m-d512L24-do0.1-gate,RMS+SwiGLU(8/3)+RoPE+gate,100M,68.20,57.22,53.24,61.54,84.14,67.45,58.46,64.32,64.78,ours(measured;Muon;vast 4x3090;seed42;multirc collapse f1~0.06;vs AdamW-L24 -3.2)
 muon-bl100m-d512L32-do0.1-gate,RMS+SwiGLU(8/3)+RoPE+gate,100M,66.91,57.10,56.83,59.62,82.39,67.31,57.58,63.96,64.69,ours(measured;Muon;vast 4x3090;seed42;multirc collapse f1~0.06)
+bl100m-d512L32-do0.1-gate-hyb16of16,RMS+SwiGLU(8/3)+RoPE+gate,100M,69.30,57.55,62.59,63.46,84.93,71.51,61.84,67.31,67.95,ours(measured;causal-attention GLUE;hybrid-path all-causal control;seed42;vocab16064)
+bl100m-d512L32-do0.1-gate-hyb8of16,RMS+SwiGLU(8/3)+RoPE+gate,100M,69.72,58.13,61.87,67.31,86.67,71.94,61.08,68.10,68.24,ours(measured;causal-attention GLUE;8 causal/8 masked;seed42;vocab16064)
+bl100m-d512L32-do0.1-gate-hyb1of16,RMS+SwiGLU(8/3)+RoPE+gate,100M,68.87,60.89,64.03,63.46,85.08,71.08,60.53,67.71,68.41,ours(measured;causal-attention GLUE;1 causal/15 masked;seed42;vocab16064)
+bl100m-d512L32-do0.1-gate-hyb1of16-bidir,RMS+SwiGLU(8/3)+RoPE+gate,100M,68.93,67.49,63.31,61.54,87.97,73.66,61.33,69.18,70.45,ours(measured;same hyb1of16 checkpoint;bidirectional-attention GLUE;seed42;vocab16064)
