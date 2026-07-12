@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-TRACK="${1:?usage: run_babylm_aoa.sh {10m|100m}}"
+TRACK="${1:?usage: run_babylm_aoa.sh 10m-or-100m}"
 PY="${PY:-python}"
 B="${B:-8}"
 GA="${GA:-64}"

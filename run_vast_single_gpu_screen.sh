@@ -4,7 +4,7 @@
 
 set -euo pipefail
 
-VARIANT="${1:?usage: run_vast_single_gpu_screen.sh {kimi-base|kimi-attnres|muon-attnres}}"
+VARIANT="${1:?usage: run_vast_single_gpu_screen.sh kimi-base-or-kimi-attnres-or-muon-attnres}"
 PY="${PY:-/workspace/envs/nanogpt/bin/python}"
 B="${B:-8}"
 GA="${GA:-64}"
