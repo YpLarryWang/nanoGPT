@@ -10,6 +10,7 @@ set -euo pipefail
 
 LR="${1:?usage: run_muon_lr_pilot.sh <learning-rate> [lr-tag]}"
 LR_TAG="${2:-lr${LR}}"
+: "${MNLI_BSZ:=32}"
 
 : "${DATA:=/workspace}"
 : "${NANO_REPO:=$DATA/nanoGPT}"
@@ -41,7 +42,7 @@ fi
 
 echo "pilot_start=$(date --iso-8601=seconds) variant=$VARIANT lr=$LR lr_tag=$LR_TAG gpu=${CUDA_VISIBLE_DEVICES:-unset} seed=42"
 echo "fixed_config=adamw beta1=0.9 beta2=0.999 eps=1e-8 weight_decay=0.01 warmup=0.06 scheduler=cosine"
-echo "tasks=mnli:e10:b32,qqp:e10:b16,rte:e10:b16,multirc:e5:b16"
+echo "tasks=mnli:e10:b${MNLI_BSZ},qqp:e10:b16,rte:e10:b16,multirc:e5:b16"
 
 run_task () {
   local TASK="$1" LABELS="$2" BSZ="$3" EPOCHS="$4" SELECT_METRIC="$5"
@@ -79,7 +80,7 @@ run_task () {
   echo "task_finish=$(date --iso-8601=seconds) task=$TASK"
 }
 
-run_task mnli    3 32 10 accuracy accuracy
+run_task mnli    3 "$MNLI_BSZ" 10 accuracy accuracy
 run_task qqp     2 16 10 f1       accuracy f1 mcc
 run_task rte     2 16 10 accuracy accuracy f1 mcc
 run_task multirc 2 16 5  accuracy accuracy f1 mcc
