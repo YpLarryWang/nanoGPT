@@ -15,11 +15,25 @@ import torch
 import torch.nn as nn
 from torch.nn import functional as F
 
+# def attn_res_mix(sources, q, norm):
+#     # sources: list of [B,T,C] depth-sources; q: [C] pseudo-query; norm: RMSNorm — for KEYS only
+#     V = torch.stack(sources)  # [S,B,T,C]
+#     logits = torch.einsum('c,sbtc->sbt', q, norm(V))  # one logit per source per position
+#     return torch.einsum('sbt,sbtc->btc', logits.softmax(dim=0), V)   # softmax over DEPTH = dim 0
+
 def attn_res_mix(sources, q, norm):
-    # sources: list of [B,T,C] depth-sources; q: [C] pseudo-query; norm: RMSNorm — for KEYS only
-    V = torch.stack(sources)  # [S,B,T,C]
-    logits = torch.einsum('c,sbtc->sbt', q, norm(V))  # one logit per source per position
-    return torch.einsum('sbt,sbtc->btc', logits.softmax(dim=0), V)   # softmax over DEPTH = dim 0
+    # [B,T,S,C]，C is still the last dim of RMSNorm
+    V = torch.stack(sources, dim=2)
+    K = norm(V)
+
+    # [B,T,S]，depth S becomes the last dim of softmax
+    # we want btsc * c1 = btc
+    # pytorch would temporarily view one-dim right op array as a column vector, after matmul the temp dim is removed!
+    logits = torch.matmul(K, q)
+    weights = logits.softmax(dim=-1)
+
+    # [B,T,1,S] @ [B,T,S,C] -> [B,T,C]
+    return torch.matmul(weights.unsqueeze(-2), V).squeeze(-2)
 
 def make_norm(config):
     if config.use_rmsnorm:
