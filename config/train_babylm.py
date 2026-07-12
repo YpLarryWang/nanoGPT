@@ -29,17 +29,21 @@ n_embd = 512
 dropout = 0.0
 bias = False
 
-# --- architecture ablation flags (overridden per variant by the runner) ---
+# --- architecture ablation flags ---
 use_rmsnorm = False
 use_swiglu = False
 swiglu_mult = 8/3
 use_rope = False
+use_attn_res = False
+attn_res_block_size = 2
 
+# --- optimizer flags ---
+# -- AdamW --
 learning_rate = 6e-4
 max_iters = 466                  # 10M default; 100M overrides to ~5150
 lr_decay_iters = 466             # keep == max_iters (Chinchilla)
 min_lr = 6e-5
 warmup_iters = 40                # ~10% of 466 (scaled down from tinystories' 100)
 beta2 = 0.95
-
+# -- Muon --
 use_muon = False
