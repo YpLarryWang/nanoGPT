@@ -44,6 +44,13 @@ def load_experiments(paths):
     return records
 
 
+def load_existing(path):
+    if not os.path.exists(path):
+        return {}
+    with open(path, newline="") as f:
+        return {row["model"]: row for row in csv.DictReader(f)}
+
+
 def wandb_configs(project, names, experiments):
     if not project:
         return {}
@@ -68,6 +75,48 @@ def first(*values):
     return next((value for value in values if value is not None and value != ""), "")
 
 
+def inherit_derived_rows(rows):
+    """Fill metadata for aggregate/eval-only rows from their training runs."""
+    by_name = {row["model"]: row for row in rows}
+    inherited_fields = [
+        "pretrain_batch_size", "pretrain_grad_accum", "tokens_per_update",
+        "eval_batch_size", "eval_iters", "val_tokens_per_eval",
+    ]
+
+    for row in rows:
+        name = row["model"]
+        sources = []
+        source_label = ""
+        if name.endswith("-mean"):
+            base = name[:-len("-mean")]
+            sources = [
+                by_name.get(base),
+                by_name.get(f"{base}-s1338"),
+                by_name.get(f"{base}-s1339"),
+            ]
+            source_label = "aggregate_members"
+        elif name.endswith("-bidir"):
+            # Bidirectional rows evaluate an existing causal checkpoint; they
+            # are not separately pretrained runs.
+            sources = [by_name.get(name[:-len("-bidir")])]
+            source_label = "checkpoint_parent"
+
+        if not sources or any(source is None for source in sources):
+            continue
+        for field in inherited_fields:
+            values = {str(source[field]) for source in sources if source[field] != ""}
+            if len(values) == 1:
+                row[field] = values.pop()
+        if all(row[field] != "" for field in inherited_fields[:2]):
+            row["metadata_source"] = source_label
+            if source_label == "aggregate_members":
+                row["seed"] = "1337/1338/1339"
+                row["sampler_seed"] = "1337/1338/1339"
+            else:
+                row["seed"] = sources[0]["seed"]
+                row["sampler_seed"] = sources[0]["sampler_seed"]
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument(
@@ -81,29 +130,44 @@ def main():
 
     names = scored_names()
     experiments = load_experiments(args.experiments)
+    existing = load_existing(args.output)
     wb = wandb_configs(args.wandb_project, names, experiments)
     rows = []
     for name in sorted(names):
         exp = experiments.get(name, {})
+        cached = existing.get(name, {})
         wandb_id, config = wb.get(name, ("", {}))
-        batch = first(config.get("batch_size"), exp.get("batch_size"))
+        batch = first(
+            config.get("batch_size"), exp.get("batch_size"),
+            cached.get("pretrain_batch_size"),
+        )
         grad_accum = first(
-            config.get("gradient_accumulation_steps"), exp.get("grad_accum")
+            config.get("gradient_accumulation_steps"), exp.get("grad_accum"),
+            cached.get("pretrain_grad_accum"),
         )
         block_size = first(config.get("block_size"), exp.get("block_size"))
-        eval_batch = first(config.get("eval_batch_size"), exp.get("eval_batch_size"), batch)
-        eval_iters = first(config.get("eval_iters"), exp.get("eval_iters"), 50 if batch != "" else "")
-        tokens = first(exp.get("tokens_per_iter"))
+        eval_batch = first(
+            config.get("eval_batch_size"), exp.get("eval_batch_size"),
+            cached.get("eval_batch_size"), batch,
+        )
+        eval_iters = first(
+            config.get("eval_iters"), exp.get("eval_iters"),
+            cached.get("eval_iters"), 50 if batch != "" else "",
+        )
+        tokens = first(exp.get("tokens_per_iter"), cached.get("tokens_per_update"))
         if tokens == "" and all(v != "" for v in (batch, grad_accum, block_size)):
             tokens = int(batch) * int(grad_accum) * int(block_size)
-        val_tokens = first(exp.get("val_tokens_per_eval"))
+        val_tokens = first(
+            exp.get("val_tokens_per_eval"), cached.get("val_tokens_per_eval")
+        )
         if val_tokens == "" and all(v != "" for v in (eval_batch, eval_iters, block_size)):
             val_tokens = int(eval_batch) * int(eval_iters) * int(block_size)
-        source = "+".join(
-            part for part, present in (
-                ("experiments", bool(exp)), ("wandb", name in wb)
-            ) if present
-        )
+        source_parts = cached.get("metadata_source", "").split("+")
+        if exp and "experiments" not in source_parts:
+            source_parts.append("experiments")
+        if name in wb and "wandb" not in source_parts:
+            source_parts.append("wandb")
+        source = "+".join(part for part in source_parts if part)
         rows.append({
             "model": name,
             "pretrain_batch_size": batch,
@@ -112,11 +176,16 @@ def main():
             "eval_batch_size": eval_batch,
             "eval_iters": eval_iters,
             "val_tokens_per_eval": val_tokens,
-            "seed": first(config.get("seed"), exp.get("seed")),
-            "sampler_seed": first(config.get("sampler_seed"), exp.get("sampler_seed")),
-            "wandb_id": first(exp.get("wandb_id"), wandb_id),
+            "seed": first(config.get("seed"), exp.get("seed"), cached.get("seed")),
+            "sampler_seed": first(
+                config.get("sampler_seed"), exp.get("sampler_seed"),
+                cached.get("sampler_seed"),
+            ),
+            "wandb_id": first(exp.get("wandb_id"), wandb_id, cached.get("wandb_id")),
             "metadata_source": source,
         })
+
+    inherit_derived_rows(rows)
 
     with open(args.output, "w", newline="") as f:
         writer = csv.DictWriter(f, fieldnames=FIELDS, lineterminator="\n")
