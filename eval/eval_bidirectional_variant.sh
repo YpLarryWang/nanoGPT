@@ -38,15 +38,29 @@ cd "$EVAL_REPO"
 echo ">> full zero-shot with shifted masked-next-token backend"
 bash scripts/eval_zero_shot.sh "$HFDIR" mntp
 
-# A successful full 2026 zero-shot run currently produces 16 result files.
-N_RESULTS="$(find "$RESULT_DIR" -type f | wc -l | tr -d ' ')"
-[[ "$N_RESULTS" -eq 16 ]] || {
-  echo "expected 16 zero-shot files for $VARIANT, found $N_RESULTS" >&2
-  exit 1
-}
+echo ">> GlobalPIQA"
+for task in global_piqa_parallel global_piqa_nonparallel; do
+  "$PY" -m evaluation_pipeline.sentence_zero_shot.run \
+    --model_path_or_name "$HFDIR" --backend mntp --task "$task" \
+    --data_path "evaluation_data/full_eval/${task}" --save_predictions \
+    --revision_name main
+done
+
+# Check named deliverables instead of a brittle total file count. Upstream can
+# add reports without invalidating a completed run.
+for required in \
+  "$RESULT_DIR/main/zero_shot/mntp/blimp/blimp_filtered/best_temperature_report.txt" \
+  "$RESULT_DIR/main/zero_shot/mntp/comps/comps/best_temperature_report.txt" \
+  "$RESULT_DIR/main/zero_shot/mntp/global_piqa_parallel/global_piqa_parallel/best_temperature_report.txt" \
+  "$RESULT_DIR/main/zero_shot/mntp/global_piqa_nonparallel/global_piqa_nonparallel/best_temperature_report.txt" \
+  "$RESULT_DIR/main/zero_shot/mntp/reading/report.txt"; do
+  [[ -f "$required" ]] || { echo "missing zero-shot deliverable: $required" >&2; exit 1; }
+done
 
 echo ">> bidirectional GLUE"
-bash "$NANO_REPO/eval/eval_glue_variant.sh" "$VARIANT"
+SYNC_METADATA_FROM="$SOURCE" bash "$NANO_REPO/eval/eval_glue_variant.sh" "$VARIANT"
 
 touch "$NANO_REPO/results/${VARIANT}.eval.done"
 echo ">> complete: $VARIANT"
+"$PY" "$NANO_REPO/eval/sync_eval_results.py" "$VARIANT" --full --backend mntp \
+  --metadata-from "$SOURCE" --eval-repo "$EVAL_REPO"

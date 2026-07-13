@@ -23,7 +23,8 @@ COLS = [
     "pretrain_batch_size", "pretrain_grad_accum", "tokens_per_update",
     "eval_batch_size", "eval_iters", "val_tokens_per_eval", "seed", "sampler_seed",
     "wandb_id", "metadata_source",
-    "blimp", "supplement", "ewok", "entity_tracking", "comps", "avg5", "reliable4",
+    "blimp", "supplement", "ewok", "entity_tracking", "comps",
+    "global_piqa_parallel", "global_piqa_nonparallel", "avg5", "reliable4",
     "reading_eye", "reading_selfpaced", "best_val_loss",
     "boolq", "multirc", "rte", "wsc", "mrpc", "qqp", "mnli", "macro7", "macro6",
     "eval_tok", "source",
@@ -58,6 +59,8 @@ load("zero_shot.csv", {
     "arch": "arch", "train_words": "train_words", "params_M": "params_M",
     "blimp": "blimp", "supplement": "supplement", "ewok": "ewok",
     "entity_tracking": "entity_tracking", "comps": "comps", "avg5": "avg5",
+    "global_piqa_parallel": "global_piqa_parallel",
+    "global_piqa_nonparallel": "global_piqa_nonparallel",
     "reading_eye": "reading_eye", "reading_selfpaced": "reading_selfpaced",
     "eval_tok": "eval_tok", "source": "source",
 })
@@ -66,6 +69,8 @@ load("scale_up.csv", {
     "params_M": "params_M", "dropout": "dropout", "sampler": "sampler",
     "blimp": "blimp", "supplement": "supplement", "ewok": "ewok",
     "entity_tracking": "entity_tracking", "comps": "comps", "avg5": "avg5",
+    "global_piqa_parallel": "global_piqa_parallel",
+    "global_piqa_nonparallel": "global_piqa_nonparallel",
     "reading_eye": "reading_eye", "reading_selfpaced": "reading_selfpaced",
     "best_val_loss": "best_val_loss", "source": "source",
 })

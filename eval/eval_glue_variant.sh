@@ -77,4 +77,9 @@ run_task qqp     2 16 10 f1       accuracy f1 mcc
 run_task mnli    3 32 10 accuracy accuracy
 
 touch "$NANO_REPO/results/${VARIANT}.glue.done"
+SYNC_ARGS=("$VARIANT" --glue --eval-repo "$EVAL_REPO")
+if [[ -n "${SYNC_METADATA_FROM:-}" ]]; then
+  SYNC_ARGS+=(--metadata-from "$SYNC_METADATA_FROM")
+fi
+"$PY" "$NANO_REPO/eval/sync_eval_results.py" "${SYNC_ARGS[@]}"
 echo "==== GLUE complete: $VARIANT ===="

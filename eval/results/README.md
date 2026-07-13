@@ -29,10 +29,30 @@ Our headline story: a 33M model matching/apporaching a 98M GPT-2 at ~1/3 the par
   side (which drops the noisy `entity_tracking`). It can change conclusions: on `macro7` our 116M
   champion `bl100m-d512L32-do0.1-gate` trails Baseline-Strict (68.16 vs 68.86 — the gap is
   *entirely* WSC), but on `macro6` it edges ahead (68.94 vs 68.80).
+- `fast_zero_shot.csv` — one row per model revision/backend for the required intermediate-checkpoint
+  evaluation. It is written directly by `sync_eval_results.py`; it is a final checkpoint-granularity
+  scoreboard, not an intermediate file. GlobalPIQA parallel/nonparallel are explicit columns.
 - `training_metadata.csv` — one row per scored run with the pretraining microbatch,
   gradient accumulation, tokens per optimizer update, validation sampling budget, seeds,
   and W&B ID. It is generated from `results/experiments.jsonl` plus W&B and joined into
   `all_runs.csv`; blanks mean the metadata is unavailable (e.g. external baselines).
+
+## Structured result import (no manual transcription)
+
+Run from the nanoGPT repository after the official evaluation finishes:
+
+```bash
+python eval/sync_eval_results.py MODEL --glue
+python eval/sync_eval_results.py MODEL --full --backend causal
+python eval/sync_eval_results.py MODEL --fast --all-revisions --backend causal
+```
+
+The importer selects the declared metric key per GLUE task (MultiRC uses `accuracy`; MRPC/QQP use
+`f1`), reads only labelled zero-shot report sections, calculates aggregates itself, writes the
+source-of-truth CSV directly, rebuilds `all_runs.csv`, and runs `validate_results.py`. For a new
+full zero-shot model with no source row yet, add `--metadata-from BASE_MODEL` to clone only the
+non-score metadata. Use `--csv-model NAME` when the eval result directory and scoreboard name differ
+(for example `strict` → `Baseline-Strict`). Do not copy metrics from terminal output into a CSV by hand.
 
 ## `source` column
 - `ours(measured)` — run by us through the official pipeline. **Every row (both baselines

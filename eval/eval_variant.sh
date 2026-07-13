@@ -50,10 +50,23 @@ cd "$EVAL_REPO"
 if [ "$FAST" = 1 ]; then
   echo ">> fast zero-shot"
   bash scripts/eval_zero_shot_fast.sh "$HFDIR" main causal
+  GLOBAL_PIQA_DATA="evaluation_data/fast_eval"
 else
   echo ">> full zero-shot"
   bash scripts/eval_zero_shot.sh "$HFDIR" causal
+  GLOBAL_PIQA_DATA="evaluation_data/full_eval"
 fi
+
+# GlobalPIQA was added after the original 2026 pipeline release. It is kept in
+# a dedicated upstream driver for Hub revisions; local one-checkpoint runs need
+# these two explicit calls instead of the all-revisions driver.
+echo ">> GlobalPIQA (${GLOBAL_PIQA_DATA})"
+for task in global_piqa_parallel global_piqa_nonparallel; do
+  "$PY" -m evaluation_pipeline.sentence_zero_shot.run \
+    --model_path_or_name "$HFDIR" --backend causal --task "$task" \
+    --data_path "${GLOBAL_PIQA_DATA}/${task}" --save_predictions \
+    --revision_name main
+done
 
 if [ "$GLUE" = 1 ]; then
   echo ">> GLUE fine-tuning (slow: boolq/multirc/rte/wsc/mrpc/qqp/mnli)"
@@ -62,3 +75,8 @@ if [ "$GLUE" = 1 ]; then
 fi
 
 echo ">> done: $VARIANT  (results under $EVAL_REPO/results/$VARIANT)"
+SYNC_ARGS=("$VARIANT" --eval-repo "$EVAL_REPO" --backend causal)
+if [ "$FAST" = 1 ]; then SYNC_ARGS+=(--fast); else SYNC_ARGS+=(--full); fi
+if [ "$GLUE" = 1 ]; then SYNC_ARGS+=(--glue); fi
+echo ">> sync scoreboards"
+"$PY" "$NANO_REPO/eval/sync_eval_results.py" "${SYNC_ARGS[@]}"
