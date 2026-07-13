@@ -50,6 +50,7 @@ init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 resume_checkpoint = '' # explicit checkpoint path; legacy resume falls back to out_dir/ckpt.pt
 save_iters = []    # exact iters to archive a separate, weights-only checkpoint
 checkpoint_schedule = '' # dual word/token schedule JSON; its iters are unioned with save_iters
+experiment_log_path = 'results/experiments.jsonl'
 # wandb logging
 wandb_log = False # disabled by default
 wandb_project = 'owt'
@@ -874,10 +875,12 @@ if master_process:  # only rank-0 writes, so a multi-GPU (DDP) run logs one line
             final_metrics['val_masked'].item(),
             4,
         )
-    os.makedirs('results', exist_ok=True)
-    with open('results/experiments.jsonl', 'a') as f:        # APPEND by setting mode to 'a', never overwrite
+    experiment_log_dir = os.path.dirname(experiment_log_path)
+    if experiment_log_dir:
+        os.makedirs(experiment_log_dir, exist_ok=True)
+    with open(experiment_log_path, 'a') as f:        # APPEND by setting mode to 'a', never overwrite
         f.write(json.dumps(record) + '\n')
-    print(f"logged run -> results/experiments.jsonl  (val_loss={record['val_loss']})")
+    print(f"logged run -> {experiment_log_path}  (val_loss={record['val_loss']})")
 
 if wandb_log and master_process:
     wandb.finish()                                            # mark the run 'finished', flush
