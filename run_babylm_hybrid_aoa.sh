@@ -83,7 +83,12 @@ if grep -q "\"run_name\": \"${NAME}\"" results/experiments.jsonl 2>/dev/null; th
   echo "run already exists in results/experiments.jsonl: $NAME" >&2
   exit 1
 fi
-[[ -n "${WANDB_API_KEY:-}" ]] || { echo "WANDB_API_KEY is not set" >&2; exit 1; }
+if [[ -z "${WANDB_API_KEY:-}" ]]; then
+  [[ -f "$HOME/.netrc" ]] && grep -q "machine api.wandb.ai" "$HOME/.netrc" || {
+    echo "W&B authentication missing (neither WANDB_API_KEY nor api.wandb.ai in ~/.netrc)" >&2
+    exit 1
+  }
+fi
 
 mkdir -p logs/aoa results
 rm -f "$DONE" "$FAILED"
