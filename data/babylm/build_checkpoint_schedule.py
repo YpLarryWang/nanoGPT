@@ -33,6 +33,51 @@ def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
     return digest.hexdigest()
 
 
+def diagnose_word_start_mismatch(
+    data_dir: Path,
+    tokenizer: Tokenizer,
+    lookup: np.ndarray,
+    *,
+    batch_size: int = 10_000,
+) -> None:
+    """Print the first clean line where BPE-space markers disagree with split()."""
+    for source in SOURCES:
+        path = data_dir / "clean" / "train" / f"{source}.txt"
+        texts: list[str] = []
+        line_numbers: list[int] = []
+
+        def check_batch() -> bool:
+            if not texts:
+                return False
+            for line_number, text, encoding in zip(
+                line_numbers, texts, tokenizer.encode_batch(texts)
+            ):
+                expected = 0 if text == EOT else len(text.split())
+                actual = int(lookup[np.asarray(encoding.ids, dtype=np.int64)].sum())
+                if actual != expected:
+                    token_strings = [tokenizer.id_to_token(token_id) for token_id in encoding.ids]
+                    print(
+                        "word-start mismatch: "
+                        f"{path}:{line_number} split={expected} bpe_starts={actual} "
+                        f"text={text!r} tokens={token_strings!r}"
+                    )
+                    return True
+            return False
+
+        with path.open(encoding="utf-8") as f:
+            for line_number, line in enumerate(f, start=1):
+                texts.append(line.rstrip("\n"))
+                line_numbers.append(line_number)
+                if len(texts) == batch_size:
+                    if check_batch():
+                        return
+                    texts.clear()
+                    line_numbers.clear()
+        if check_batch():
+            return
+    print("no per-line mismatch found; inspect source-boundary handling")
+
+
 def build_word_starts(data_dir: Path, tokenizer_path: Path, output: Path) -> np.memmap:
     """Mark first BPE token of every whitespace word directly in train.bin.
 
@@ -71,6 +116,7 @@ def build_word_starts(data_dir: Path, tokenizer_path: Path, output: Path) -> np.
                     clean_words += len(text.split())
     marked_words = int(marks_out.sum(dtype=np.uint64))
     if marked_words != clean_words:
+        diagnose_word_start_mismatch(data_dir, tokenizer, lookup)
         raise ValueError(
             "word-start/tokenizer invariant failed: "
             f"train.bin marks {marked_words:,} words but clean text has {clean_words:,}"
