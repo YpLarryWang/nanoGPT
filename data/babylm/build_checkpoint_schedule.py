@@ -13,7 +13,6 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
-import os
 from collections import defaultdict
 from pathlib import Path
 
@@ -256,7 +255,7 @@ def main() -> None:
     parser.add_argument("--data-dir", required=True, type=Path)
     parser.add_argument("--tokenizer", default="tokenizer/bpe-16000.json")
     parser.add_argument("--output", required=True, type=Path)
-    parser.add_argument("--word-map", type=Path, help="reusable uint8 word-start map")
+    parser.add_argument("--word-map", type=Path, help="uint8 word-start map output path")
     parser.add_argument("--block-size", type=int, default=512)
     parser.add_argument("--batch-size", type=int, default=32)
     parser.add_argument("--global-grad-accum", type=int, default=16)
@@ -270,16 +269,9 @@ def main() -> None:
     data_dir = args.data_dir.resolve()
     tokenizer_path = (data_dir / args.tokenizer).resolve()
     word_map_path = args.word_map or data_dir / "train.word_starts.uint8"
-    if word_map_path.exists():
-        word_starts = np.memmap(word_map_path, dtype=np.uint8, mode="r")
-        word_start_corrections = []
-        train_len = os.path.getsize(data_dir / "train.bin") // np.dtype(np.uint16).itemsize
-        if len(word_starts) != train_len:
-            raise ValueError(f"word map has {len(word_starts)} entries; train.bin has {train_len}")
-    else:
-        word_starts, word_start_corrections = build_word_starts(
-            data_dir, tokenizer_path, word_map_path
-        )
+    word_starts, word_start_corrections = build_word_starts(
+        data_dir, tokenizer_path, word_map_path
+    )
 
     local_grad_accum = args.global_grad_accum // args.world_size
     starts = shuffle_starts(
