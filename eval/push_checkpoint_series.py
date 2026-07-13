@@ -33,6 +33,16 @@ def selected_milestones(manifest: dict, series: str) -> list[tuple[dict, dict]]:
     return sorted(selected, key=lambda pair: pair[0]["iter_num"])
 
 
+def role_checkpoint(run_dir: Path, manifest: dict, role: str) -> Path:
+    relative_path = manifest.get("roles", {}).get(role)
+    if not relative_path:
+        raise ValueError(f"manifest has no {role!r} checkpoint")
+    checkpoint = run_dir / relative_path
+    if not checkpoint.is_file():
+        raise FileNotFoundError(f"missing {role} checkpoint: {checkpoint}")
+    return checkpoint
+
+
 def convert(python: str, converter: Path, checkpoint: Path, tokenizer: Path, output: Path, dtype: str):
     subprocess.run(
         [
@@ -60,6 +70,7 @@ def main() -> None:
         default=Path(__file__).with_name("convert_nanogpt_to_hf.py"),
     )
     parser.add_argument("--dtype", default="float32", choices=["float32", "float16", "bfloat16"])
+    parser.add_argument("--main-role", default="final", choices=["final", "best"])
     parser.add_argument("--private", action=argparse.BooleanOptionalAction, default=True)
     args = parser.parse_args()
 
@@ -70,15 +81,36 @@ def main() -> None:
     if not milestones:
         raise SystemExit(f"manifest contains no {args.series!r} milestone checkpoints")
 
-    final_relative = manifest.get("roles", {}).get("final")
-    if not final_relative:
-        raise SystemExit("manifest has no final checkpoint")
-    final_checkpoint = run_dir / final_relative
+    try:
+        main_checkpoint = role_checkpoint(run_dir, manifest, args.main_role)
+    except (ValueError, FileNotFoundError) as exc:
+        raise SystemExit(str(exc)) from exc
+
+    missing = [
+        run_dir / entry["path"]
+        for entry, _ in milestones
+        if not (run_dir / entry["path"]).is_file()
+    ]
+    if missing:
+        raise SystemExit(f"missing milestone checkpoint: {missing[0]}")
 
     api = HfApi()
     api.create_repo(args.repo, repo_type="model", private=args.private, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="babylm-hf-") as tmp:
         tmp_root = Path(tmp)
+
+        # A newly-created Hub repo has no commit from which a revision branch can
+        # be created. Seed main first, then fork and populate the milestone branches.
+        main_output = tmp_root / f"{args.main_role}-main"
+        convert(args.python, args.converter, main_checkpoint, args.tokenizer, main_output, args.dtype)
+        api.upload_folder(
+            repo_id=args.repo,
+            repo_type="model",
+            revision="main",
+            folder_path=main_output,
+            commit_message=f"{args.main_role} model from {main_checkpoint.name}",
+        )
+
         converted_by_path: dict[Path, Path] = {}
         for checkpoint_entry, label in milestones:
             checkpoint = run_dir / checkpoint_entry["path"]
@@ -100,19 +132,9 @@ def main() -> None:
                 ),
             )
 
-        final_output = tmp_root / "final-main"
-        convert(args.python, args.converter, final_checkpoint, args.tokenizer, final_output, args.dtype)
-        api.upload_folder(
-            repo_id=args.repo,
-            repo_type="model",
-            revision="main",
-            folder_path=final_output,
-            commit_message=f"final model from {final_checkpoint.name}",
-        )
-
     print(
         f"pushed {len(milestones)} {args.series} revisions + main to {args.repo}; "
-        f"main source={final_checkpoint.name}"
+        f"main role={args.main_role} source={main_checkpoint.name}"
     )
 
 
