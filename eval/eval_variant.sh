@@ -3,23 +3,29 @@
 # BabyLM-2026 *strict* evaluation on it, reusing the official pipeline scripts.
 #
 # Usage (run from anywhere):
-#   bash eval/eval_variant.sh bl100m-ln-mlp-learned          # full zero-shot
+#   bash eval/eval_variant.sh bl100m-ln-mlp-learned          # full zero-shot of final
 #   bash eval/eval_variant.sh bl10m-rms-swiglu-rope --fast   # fast zero-shot (checkpoints)
 #   bash eval/eval_variant.sh bl100m-ln-mlp-learned --glue   # + GLUE fine-tuning (slow!)
+#   bash eval/eval_variant.sh <variant> --role best           # explicit best checkpoint
+#   bash eval/eval_variant.sh <variant> --ckpt /path/to/x.pt  # explicit checkpoint path
 #
-# <variant> is a directory name under out-babylm/ (expects out-babylm/<variant>/ckpt.pt).
+# New runs resolve final/best through checkpoint_manifest.json. Legacy runs fall
+# back to out-babylm/<variant>/ckpt.pt.
 # Paths default to the jetstream layout; override any via environment variables:
 #   DATA NANO_REPO EVAL_REPO PY HF_ROOT
 set -euo pipefail
 
-VARIANT="${1:?usage: eval_variant.sh <variant> [--fast] [--glue]}"; shift || true
-FAST=0; GLUE=0
-for a in "$@"; do
-  case "$a" in
+VARIANT="${1:?usage: eval_variant.sh <variant> [--fast] [--glue] [--role final|best] [--ckpt path]}"; shift || true
+FAST=0; GLUE=0; ROLE=final; CKPT_ARG=""
+while [ "$#" -gt 0 ]; do
+  case "$1" in
     --fast) FAST=1 ;;
     --glue) GLUE=1 ;;
-    *) echo "unknown arg: $a" >&2; exit 1 ;;
+    --role) ROLE="${2:?--role needs final or best}"; shift ;;
+    --ckpt) CKPT_ARG="${2:?--ckpt needs a path}"; ROLE=explicit; shift ;;
+    *) echo "unknown arg: $1" >&2; exit 1 ;;
   esac
+  shift
 done
 
 : "${DATA:=/media/volume/yupei-data}"
@@ -31,7 +37,16 @@ done
 # the pipeline's scripts invoke a bare `python`; point it at the eval venv
 export PATH="$(dirname "$PY"):$PATH"
 
-CKPT="$NANO_REPO/out-babylm/$VARIANT/ckpt.pt"
+RUN_DIR="$NANO_REPO/out-babylm/$VARIANT"
+MANIFEST="$RUN_DIR/checkpoint_manifest.json"
+if [ -n "$CKPT_ARG" ]; then
+  CKPT="$CKPT_ARG"
+elif [ -f "$MANIFEST" ]; then
+  CKPT="$($PY -c 'import json,os,sys; p=sys.argv[1]; role=sys.argv[2]; d=json.load(open(p)); print(os.path.join(os.path.dirname(p), d["roles"][role]))' "$MANIFEST" "$ROLE")"
+else
+  [ "$ROLE" = final ] || { echo "legacy run has no manifest; pass --ckpt for role=$ROLE" >&2; exit 1; }
+  CKPT="$RUN_DIR/ckpt.pt"
+fi
 [ -f "$CKPT" ] || { echo "no checkpoint: $CKPT" >&2; exit 1; }
 
 # 100M models use the 100M tokenizer; everything else uses the 10M tokenizer.
@@ -41,9 +56,11 @@ case "$VARIANT" in
   *bl100m-*) TOK="$NANO_REPO/data/babylm_100m/tokenizer/bpe-16000.json" ;;
   *)         TOK="$NANO_REPO/data/babylm/tokenizer/bpe-16000.json" ;;
 esac
-HFDIR="$HF_ROOT/$VARIANT"
+RESULT_NAME="$VARIANT"
+if [ "$ROLE" != final ]; then RESULT_NAME="$VARIANT-$ROLE"; fi
+HFDIR="$HF_ROOT/$RESULT_NAME"
 
-echo ">> convert $VARIANT -> $HFDIR"
+echo ">> convert $VARIANT ($ROLE: $CKPT) -> $HFDIR"
 "$PY" "$NANO_REPO/eval/convert_nanogpt_to_hf.py" --ckpt "$CKPT" --tokenizer "$TOK" --out "$HFDIR"
 
 cd "$EVAL_REPO"
@@ -75,7 +92,7 @@ if [ "$GLUE" = 1 ]; then
 fi
 
 echo ">> done: $VARIANT  (results under $EVAL_REPO/results/$VARIANT)"
-SYNC_ARGS=("$VARIANT" --eval-repo "$EVAL_REPO" --backend causal)
+SYNC_ARGS=("$RESULT_NAME" --eval-repo "$EVAL_REPO" --backend causal)
 if [ "$FAST" = 1 ]; then SYNC_ARGS+=(--fast); else SYNC_ARGS+=(--full); fi
 if [ "$GLUE" = 1 ]; then SYNC_ARGS+=(--glue); fi
 echo ">> sync scoreboards"

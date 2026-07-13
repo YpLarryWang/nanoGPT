@@ -17,10 +17,15 @@ $ torchrun --nproc_per_node=8 --nnodes=2 --node_rank=1 --master_addr=123.456.123
 """
 
 import json
+import hashlib
 import os
 import time
 import math
 import pickle
+import platform
+import random
+import socket
+import subprocess
 from contextlib import nullcontext
 
 import numpy as np
@@ -30,6 +35,7 @@ from torch.distributed import init_process_group, destroy_process_group
 
 from model import GPTConfig, GPT
 from masked_data import MaskedData
+from checkpoint_schedule import CheckpointSchedule, at_update_budget, rounded_word_tag
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
@@ -41,7 +47,9 @@ eval_iters = 200
 eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
+resume_checkpoint = '' # explicit checkpoint path; legacy resume falls back to out_dir/ckpt.pt
 save_iters = []    # exact iters to archive a separate, weights-only checkpoint
+checkpoint_schedule = '' # dual word/token schedule JSON; its iters are unioned with save_iters
 # wandb logging
 wandb_log = False # disabled by default
 wandb_project = 'owt'
@@ -58,6 +66,7 @@ block_size = 1024
 sampler = 'random'
 sampler_seed = 1337
 seed = 1337 # base RNG seed for weight init + 'random' data sampling; vary for multi-seed studies (actual = seed + ddp_rank)
+eval_seed = 424242 # fixed validation windows/corruption, isolated from training RNG
 # model
 n_layer = 12
 n_head = 12
@@ -102,6 +111,7 @@ compile = True # use PyTorch 2.0 to compile the model to be faster
 config_keys = [k for k,v in globals().items() if not k.startswith('_') and isinstance(v, (int, float, bool, str))]
 exec(open('configurator.py').read()) # overrides from command line or config file
 config = {k: globals()[k] for k in config_keys} # re-read the values (for wandb), will be useful for logging
+config['save_iters'] = list(save_iters) # list-valued config is intentionally not in config_keys
 if eval_batch_size <= 0:
     eval_batch_size = batch_size
 config['eval_batch_size'] = eval_batch_size
@@ -109,6 +119,7 @@ assert eval_batch_size > 0
 # -----------------------------------------------------------------------------
 
 # various inits, derived attributes, I/O setup
+global_gradient_accumulation_steps = gradient_accumulation_steps
 ddp = int(os.environ.get('RANK', -1)) != -1 # is this a ddp run?
 if ddp:
     init_process_group(backend=backend)
@@ -133,11 +144,35 @@ print(f"tokens per iteration will be: {tokens_per_iter:,}")
 
 # validate the checkpoint schedule up front
 save_iters_set = set(save_iters)
+exposure_schedule = None
+if checkpoint_schedule:
+    exposure_schedule = CheckpointSchedule.load(
+        checkpoint_schedule,
+        max_iters=max_iters,
+        tokens_per_iter=tokens_per_iter,
+    )
+    save_iters_set.update(exposure_schedule.save_iters)
+    schedule_parameters = exposure_schedule.metadata.get('parameters', {})
+    expected_schedule_parameters = {
+        'block_size': block_size,
+        'batch_size': batch_size,
+        'global_grad_accum': global_gradient_accumulation_steps,
+        'world_size': ddp_world_size,
+        'sampler_seed': sampler_seed,
+    }
+    for name, expected in expected_schedule_parameters.items():
+        actual = schedule_parameters.get(name)
+        if actual != expected:
+            raise ValueError(
+                f"checkpoint schedule {name}={actual!r} does not match run {name}={expected!r}"
+            )
+    config['checkpoint_schedule'] = checkpoint_schedule
+    config['checkpoint_schedule_metadata'] = exposure_schedule.metadata.get('fingerprints', {})
 if save_iters_set:
     assert all(isinstance(i, int) and i >= 0 for i in save_iters_set), "save_iters: non-neg ints"
     assert max(save_iters_set) <= max_iters, "a save_iter exceeds max_iters"
     if master_process:
-        print(f"will archive {len(save_iters_set)} checkpoints at{sorted(save_iters_set)}")
+        print(f"will archive {len(save_iters_set)} checkpoints at {sorted(save_iters_set)}")
 
 if master_process:
     os.makedirs(out_dir, exist_ok=True)
@@ -151,6 +186,27 @@ ctx = nullcontext() if device_type == 'cpu' else torch.amp.autocast(device_type=
 
 # poor man's data loader
 data_dir = os.path.join('data', dataset)
+
+if exposure_schedule is not None:
+    def sha256_file(path, chunk_size=8 * 1024 * 1024):
+        digest = hashlib.sha256()
+        with open(path, 'rb') as f:
+            for chunk in iter(lambda: f.read(chunk_size), b''):
+                digest.update(chunk)
+        return digest.hexdigest()
+
+    fingerprints = exposure_schedule.metadata.get('fingerprints', {})
+    for filename, key in (
+        ('train.bin', 'train_bin_sha256'),
+        ('val.bin', 'val_bin_sha256'),
+    ):
+        expected = fingerprints.get(key)
+        if expected:
+            actual = sha256_file(os.path.join(data_dir, filename))
+            if actual != expected:
+                raise ValueError(
+                    f"checkpoint schedule {key}={expected} does not match {data_dir}/{filename}={actual}"
+                )
 
 class ShuffleSchedule:
     """Deterministic shuffled-epoch schedule over train.bin chunk starts (sampler='shuffle').
@@ -183,7 +239,7 @@ class ShuffleSchedule:
         assert i + self.B <= len(self.sched), "shuffle schedule exhausted -- increase slack"
         return self.sched[i:i + self.B]
 
-def get_batch(split, scheduled=False, batch_size_override=None):
+def get_batch(split, scheduled=False, batch_size_override=None, generator=None):
     # We recreate np.memmap every batch to avoid a memory leak, as per
     # https://stackoverflow.com/questions/45132940/numpy-memmap-memory-usage-want-to-iterate-once/61472122#61472122
     if split == 'train':
@@ -197,7 +253,7 @@ def get_batch(split, scheduled=False, batch_size_override=None):
         ix = torch.from_numpy(schedule.batch_starts(train_draw))
         train_draw += 1
     else:                                            # nanoGPT i.i.d. windows (with replacement)
-        ix = torch.randint(len(data) - block_size, (B,))
+        ix = torch.randint(len(data) - block_size, (B,), generator=generator)
     x = torch.stack([torch.from_numpy((data[i:i+block_size]).astype(np.int64)) for i in ix])
     y = torch.stack([torch.from_numpy((data[i+1:i+1+block_size]).astype(np.int64)) for i in ix])
     if device_type == 'cuda':
@@ -210,6 +266,10 @@ def get_batch(split, scheduled=False, batch_size_override=None):
 # init these up here, can override if init_from='resume' (i.e. from a checkpoint)
 iter_num = 0
 best_val_loss = 1e9
+best_iter_num = None
+resume_rng_state = None
+resume_train_draw = None
+resume_batch = None
 train_draw = 0     # next scheduled train batch on this rank (sampler='shuffle'; derived from iter_num)
 schedule = None    # ShuffleSchedule, built just before the training loop when sampler='shuffle'
 
@@ -243,6 +303,9 @@ if use_hybrid:
         mask_id=MASK_ID,
         real_vocab=REAL_VOCAB,
     )
+    hybrid_train_generator = torch.Generator().manual_seed(seed + seed_offset + 1_000_003)
+else:
+    hybrid_train_generator = None
 
 # model init
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, 
@@ -267,7 +330,7 @@ if init_from == 'scratch':
 elif init_from == 'resume':
     print(f"Resuming training from {out_dir}")
     # resume training from a checkpoint.
-    ckpt_path = os.path.join(out_dir, 'ckpt.pt')
+    ckpt_path = resume_checkpoint or os.path.join(out_dir, 'ckpt.pt')
     checkpoint = torch.load(ckpt_path, map_location=device)
     checkpoint_model_args = checkpoint['model_args']
 
@@ -302,6 +365,10 @@ elif init_from == 'resume':
     model.load_state_dict(state_dict)
     iter_num = checkpoint['iter_num']
     best_val_loss = checkpoint['best_val_loss']
+    best_iter_num = checkpoint.get('best_iter_num', iter_num)
+    resume_rng_state = checkpoint.get('rng_state')
+    resume_train_draw = checkpoint.get('train_draw')
+    resume_batch = checkpoint.get('prefetched_batch')
 elif init_from.startswith('gpt2'):
     print(f"Initializing from OpenAI GPT-2 weights: {init_from}")
     # initialize from OpenAI GPT-2 weights
@@ -343,6 +410,18 @@ if compile:
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 
+# Restore stochastic state only after model/optimizer construction has consumed its
+# initialization randomness, and before the first training batch is fetched.
+if resume_rng_state is not None:
+    random.setstate(resume_rng_state['python'])
+    np.random.set_state(resume_rng_state['numpy'])
+    torch.set_rng_state(resume_rng_state['torch_cpu'].cpu())
+    if torch.cuda.is_available() and resume_rng_state.get('torch_cuda') is not None:
+        torch.cuda.set_rng_state_all([state.cpu() for state in resume_rng_state['torch_cuda']])
+    if hybrid_train_generator is not None and resume_rng_state.get('hybrid_train') is not None:
+        hybrid_train_generator.set_state(resume_rng_state['hybrid_train'].cpu())
+    print(f"restored RNG state from {ckpt_path}")
+
 # helps estimate an arbitrarily accurate loss over either split using many batches
 @torch.no_grad()
 def estimate_loss():
@@ -355,10 +434,15 @@ def estimate_loss():
     """
     out = {}
     model.eval()
-    for split in ['train', 'val']:
+    for split_index, split in enumerate(['train', 'val']):
+        sample_generator = torch.Generator().manual_seed(eval_seed + split_index)
         losses = torch.zeros(eval_iters)
         for k in range(eval_iters):
-            X, Y = get_batch(split, batch_size_override=eval_batch_size)
+            X, Y = get_batch(
+                split,
+                batch_size_override=eval_batch_size,
+                generator=sample_generator,
+            )
             with ctx:
                 logits, loss = model(X, Y)
             losses[k] = loss.item()
@@ -367,8 +451,15 @@ def estimate_loss():
         # Evaluate the masked objective even for the all-causal hybrid control.
         # This is validation-only and does not mean masked batches entered training.
         losses = torch.zeros(eval_iters)
+        sample_generator = torch.Generator().manual_seed(eval_seed + 2)
+        corruption_generator = torch.Generator().manual_seed(eval_seed + 3)
         for k in range(eval_iters):
-            X, Y = mdata.get_masked_batch('val', batch_size_override=eval_batch_size)
+            X, Y = mdata.get_masked_batch(
+                'val',
+                batch_size_override=eval_batch_size,
+                sample_generator=sample_generator,
+                corruption_generator=corruption_generator,
+            )
             with ctx:
                 _, loss = model(X, Y, is_causal=False)
             losses[k] = loss.item()
@@ -403,7 +494,11 @@ if sampler == 'shuffle':
     schedule = ShuffleSchedule(train_len, block_size, batch_size, ddp_world_size,
                                ddp_rank if ddp else 0,
                                (max_iters + 3) * gradient_accumulation_steps, sampler_seed)
-    train_draw = iter_num * gradient_accumulation_steps    # exact resume: derive draw from iter_num
+    train_draw = (
+        resume_train_draw
+        if resume_train_draw is not None
+        else iter_num * gradient_accumulation_steps
+    )
     if master_process:
         print(f"sampler='shuffle': {schedule.n_epochs} shuffled epochs x {schedule.n_chunks:,} "
               f"chunks, seed={sampler_seed}, start draw={train_draw}")
@@ -411,7 +506,8 @@ elif sampler != 'random':
     raise ValueError(f"unknown sampler {sampler!r} (expected 'random' or 'shuffle')")
 
 # training loop
-# fetch the very first batch
+# Fetch the very first batch. Full checkpoints carry the already-prefetched next
+# batch so resume does not skip it or advance any training RNG a second time.
 if use_hybrid:
     plan = [
         m < causal_microsteps
@@ -434,34 +530,173 @@ if use_hybrid:
             if sched:
                 ix = torch.from_numpy(schedule.batch_starts(train_draw))
                 train_draw += 1
-            return mdata.get_masked_batch('train', ix=ix)
-    X, Y = fetch(plan[0])
+            return mdata.get_masked_batch(
+                'train',
+                ix=ix,
+                sample_generator=hybrid_train_generator,
+                corruption_generator=hybrid_train_generator,
+            )
+    if resume_batch is None:
+        X, Y = fetch(plan[0])
 else:
-    X, Y = get_batch(
-        'train',
-        scheduled=(sampler == 'shuffle')
-    )
+    if resume_batch is None:
+        X, Y = get_batch(
+            'train',
+            scheduled=(sampler == 'shuffle')
+        )
+if resume_batch is not None:
+    X, Y = (tensor.to(device) for tensor in resume_batch)
 t0 = time.time()
 local_iter_num = 0 # number of iterations in the lifetime of this process
 raw_model = model.module if ddp else model # unwrap DDP container if needed
 running_mfu = -1.0
 
-# single place to write a checkpoint. weights_only=True drops the optimizer (from the series)
-def save_checkpoint(path: str, weights_only: bool = False, extra: dict = None):
+def exposure_at(update: int):
+    if exposure_schedule is not None:
+        return exposure_schedule.exposure_at(update)
+    return {'tokens_seen': update * tokens_per_iter, 'words_seen': None}
+
+
+def labels_at(update: int):
+    if exposure_schedule is None:
+        return ()
+    return exposure_schedule.labels_at(update)
+
+
+def capture_rng_state():
+    return {
+        'python': random.getstate(),
+        'numpy': np.random.get_state(),
+        'torch_cpu': torch.get_rng_state(),
+        'torch_cuda': torch.cuda.get_rng_state_all() if torch.cuda.is_available() else None,
+        'hybrid_train': hybrid_train_generator.get_state() if hybrid_train_generator is not None else None,
+    }
+
+
+def command_output(args):
+    try:
+        return subprocess.check_output(args, text=True, stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return None
+
+
+provenance = {
+    'git_sha': command_output(['git', 'rev-parse', 'HEAD']),
+    'git_dirty': bool(command_output(['git', 'status', '--porcelain'])),
+    'hostname': socket.gethostname(),
+    'platform': platform.platform(),
+    'torch_version': torch.__version__,
+    'cuda_version': torch.version.cuda,
+    'gpu': torch.cuda.get_device_name() if torch.cuda.is_available() else None,
+    'world_size': ddp_world_size,
+    'global_grad_accum': global_gradient_accumulation_steps,
+    'local_grad_accum': gradient_accumulation_steps,
+    'compile': compile,
+    'tf32_matmul': torch.backends.cuda.matmul.allow_tf32,
+    'tf32_cudnn': torch.backends.cudnn.allow_tf32,
+    'flash_sdp_enabled': torch.backends.cuda.flash_sdp_enabled() if torch.cuda.is_available() else None,
+    'mem_efficient_sdp_enabled': (
+        torch.backends.cuda.mem_efficient_sdp_enabled() if torch.cuda.is_available() else None
+    ),
+    'math_sdp_enabled': torch.backends.cuda.math_sdp_enabled() if torch.cuda.is_available() else None,
+    'data_fingerprints': (
+        exposure_schedule.metadata.get('fingerprints', {}) if exposure_schedule is not None else {}
+    ),
+}
+
+manifest_path = os.path.join(out_dir, 'checkpoint_manifest.json')
+if init_from == 'resume' and os.path.exists(manifest_path):
+    with open(manifest_path, encoding='utf-8') as f:
+        checkpoint_manifest = json.load(f)
+else:
+    checkpoint_manifest = {
+        'schema_version': 1,
+        'run_name': wandb_run_name,
+        'schedule': checkpoint_schedule or None,
+        'provenance': provenance,
+        'roles': {},
+        'checkpoints': [],
+    }
+
+
+def write_manifest():
+    tmp_path = manifest_path + '.tmp'
+    with open(tmp_path, 'w', encoding='utf-8') as f:
+        json.dump(checkpoint_manifest, f, indent=2)
+        f.write('\n')
+    os.replace(tmp_path, manifest_path)
+
+
+def record_checkpoint(path, role, weights_only, checkpoint_exposure, checkpoint_labels):
+    relative_path = os.path.relpath(path, out_dir)
+    entry = {
+        'path': relative_path,
+        'role': role,
+        'iter_num': iter_num,
+        **checkpoint_exposure,
+        'labels': list(checkpoint_labels),
+        'weights_only': weights_only,
+    }
+    checkpoint_manifest['checkpoints'] = [
+        old for old in checkpoint_manifest['checkpoints'] if old.get('path') != relative_path
+    ]
+    checkpoint_manifest['checkpoints'].append(entry)
+    checkpoint_manifest['checkpoints'].sort(key=lambda item: (item['iter_num'], item['path']))
+    if role in {'best', 'final', 'latest'}:
+        checkpoint_manifest['roles'][role] = relative_path
+    write_manifest()
+
+
+# Single place to write a checkpoint. weights_only=True drops optimizer/RNG state
+# from AoA series snapshots. Writes are atomic within the output filesystem.
+def save_checkpoint(path: str, role: str, weights_only: bool = False, extra: dict = None):
+    checkpoint_exposure = exposure_at(iter_num)
+    checkpoint_labels = labels_at(iter_num)
     ckpt = {
         'model': raw_model.state_dict(),
         'model_args': model_args,
         'iter_num': iter_num,
-        'config': config
+        'num_updates': iter_num,
+        'checkpoint_role': role,
+        'checkpoint_labels': list(checkpoint_labels),
+        **checkpoint_exposure,
+        'config': config,
+        'provenance': provenance,
     }
     if not weights_only:
         ckpt['optimizer'] = [opt.state_dict() for opt in optimizers]
         ckpt['best_val_loss'] = best_val_loss
+        ckpt['best_iter_num'] = best_iter_num
+        ckpt['rng_state'] = capture_rng_state()
+        ckpt['train_draw'] = train_draw
+        ckpt['prefetched_batch'] = (X.detach().cpu(), Y.detach().cpu())
     if extra:
         ckpt.update(extra)
     print(f"saving checkpoint -> {path}")
-    torch.save(ckpt, path)
+    tmp_path = path + '.tmp'
+    torch.save(ckpt, tmp_path)
+    os.replace(tmp_path, path)
+    record_checkpoint(path, role, weights_only, checkpoint_exposure, checkpoint_labels)
 
+
+def finalize_best_filename():
+    current = checkpoint_manifest['roles'].get('best')
+    if not current:
+        return
+    source = os.path.join(out_dir, current)
+    best_entry = next(
+        item for item in checkpoint_manifest['checkpoints'] if item['path'] == current
+    )
+    tag = rounded_word_tag(best_entry.get('words_seen'))
+    filename = f"ckpt_best-{tag}-i{best_entry['iter_num']:06d}.pt"
+    destination = os.path.join(out_dir, filename)
+    if os.path.abspath(source) != os.path.abspath(destination):
+        os.replace(source, destination)
+        best_entry['path'] = filename
+        checkpoint_manifest['roles']['best'] = filename
+        write_manifest()
+
+final_metrics = None
 while True:
 
     # determine and set the learning rate for this iteration
@@ -471,9 +706,14 @@ while True:
         for group, base in zip(opt.param_groups, bases):
             group['lr'] = base * frac
 
-    # evaluate the loss on train/val sets and write checkpoints
-    if iter_num % eval_interval == 0 and master_process:
+    at_budget = at_update_budget(iter_num, max_iters)
+
+    # The final in-budget weights are always evaluated, even when max_iters is not
+    # divisible by eval_interval. Validation is fixed and therefore comparable.
+    if (iter_num % eval_interval == 0 or at_budget) and master_process:
         losses = estimate_loss()
+        if at_budget or (iter_num == 0 and eval_only):
+            final_metrics = losses
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
         if wandb_log:
@@ -488,24 +728,43 @@ while True:
             if use_hybrid:
                 wandb_metrics["val/masked_loss"] = losses["val_masked"]
             wandb.log(wandb_metrics)
-        if losses['val'] < best_val_loss or always_save_checkpoint:
+        improved = losses['val'] < best_val_loss
+        if improved:
             best_val_loss = losses['val']
+            best_iter_num = iter_num
             if iter_num > 0:
-                checkpoint = {
-                    'model': raw_model.state_dict(),
-                    'optimizer': [opt.state_dict() for opt in optimizers],
-                    'model_args': model_args,
-                    'iter_num': iter_num,
-                    'best_val_loss': best_val_loss,
-                    'config': config,
-                }
-                print(f"saving checkpoint to {out_dir}")
-                torch.save(checkpoint, os.path.join(out_dir, 'ckpt.pt'))
+                save_checkpoint(os.path.join(out_dir, 'ckpt_best.pt'), role='best')
+        elif always_save_checkpoint and iter_num > 0:
+            save_checkpoint(os.path.join(out_dir, 'ckpt_latest.pt'), role='latest')
     if iter_num == 0 and eval_only:
         break
-    # archive a weights-only snapshot at the exact shceduled iters (incl. step 0)
+    # Archive a single weights file for the union of word- and token-series labels.
     if iter_num in save_iters_set and master_process:
-        save_checkpoint(os.path.join(out_dir, f"ckpt_{iter_num:06d}.pt"), weights_only=True)
+        save_checkpoint(
+            os.path.join(out_dir, f"ckpt_{iter_num:06d}.pt"),
+            role='milestone',
+            weights_only=True,
+        )
+
+    # iter_num is completed optimizer updates. W(max_iters) is eligible for best,
+    # archived/finalized above, and then training stops before update max_iters+1.
+    if at_budget:
+        if master_process and iter_num > 0:
+            final_exposure = exposure_at(iter_num)
+            final_path = os.path.join(
+                out_dir,
+                f"ckpt_final-{rounded_word_tag(final_exposure['words_seen'])}-i{iter_num:06d}.pt",
+            )
+            save_checkpoint(
+                final_path,
+                role='final',
+                extra={
+                    'final_val_loss': float(final_metrics['val']),
+                    'final_train_loss': float(final_metrics['train']),
+                },
+            )
+            finalize_best_filename()
+        break
 
     # forward backward update, with optional gradient accumulation to simulate larger batch size
     # and using the GradScaler if data type is float16
@@ -563,41 +822,51 @@ while True:
     iter_num += 1
     local_iter_num += 1
 
-    # termination conditions
-    if iter_num > max_iters:
-        break
-
-# final metrics + one-line experiment record (project ground-truth log)
+# Final metrics + one-line experiment record (project ground-truth log).
+if not eval_only:
+    assert iter_num == max_iters, (iter_num, max_iters)
 if master_process:  # only rank-0 writes, so a multi-GPU (DDP) run logs one line, not N.
-    final_metrics = estimate_loss()
-    # the in-loop eval only fires at multiples of eval_interval, so when max_iters % eval_interval
-    # != 0 the final model is never offered to the checkpointer. Give it a save chance here if it
-    # beats every periodic eval (no-op when it doesn't). Guard iter_num > 0 so an eval_only / zero-
-    # step pass can't checkpoint a random-init model. Scoped to the best-val regime; when
-    # always_save_checkpoint is on, the periodic path already saves the latest model every eval.
-    if not always_save_checkpoint and iter_num > 0 and final_metrics['val'] < best_val_loss:
-        best_val_loss = final_metrics['val']
-        save_checkpoint(os.path.join(out_dir, 'ckpt.pt'))  # final model became the new best
+    assert final_metrics is not None
+    final_exposure = exposure_at(iter_num)
     record = {
         'time': time.strftime('%Y-%m-%d %H:%M:%S'),
         'run_name': wandb_run_name,
         'dataset': dataset,
         'sampler': sampler,
+        'optimizer': 'muon+adamw' if use_muon else 'adamw',
+        'use_muon': use_muon,
+        'use_hybrid': use_hybrid,
+        'causal_microsteps': causal_microsteps if use_hybrid else None,
         'n_layer': n_layer, 'n_head': n_head, 'n_embd': n_embd, 'block_size': block_size,
+        'dropout': dropout,
+        'use_rmsnorm': use_rmsnorm,
+        'use_swiglu': use_swiglu,
+        'use_rope': use_rope,
+        'use_attn_gate': use_attn_gate,
+        'use_attn_res': use_attn_res,
         'params_M': round(raw_model.get_num_params() / 1e6, 2),
-        'batch_size': batch_size, 'grad_accum': gradient_accumulation_steps,
+        'batch_size': batch_size,
+        'grad_accum': global_gradient_accumulation_steps,
+        'local_grad_accum': gradient_accumulation_steps,
         'tokens_per_iter': tokens_per_iter,
         'eval_batch_size': eval_batch_size, 'eval_iters': eval_iters,
         'val_tokens_per_eval': eval_batch_size * eval_iters * block_size,
         'seed': seed, 'sampler_seed': sampler_seed,
+        'eval_seed': eval_seed,
+        'save_iters': sorted(save_iters_set),
+        'checkpoint_schedule': checkpoint_schedule or None,
         'max_iters': max_iters, 'final_iter': iter_num,
-        'total_tokens': iter_num * tokens_per_iter,
+        'total_tokens': final_exposure['tokens_seen'],
+        'total_words': final_exposure['words_seen'],
         'learning_rate': learning_rate, 'min_lr': min_lr, 'warmup_iters': warmup_iters,
         'train_loss': round(final_metrics['train'].item(), 4),  # losses are tensors — convert to plain floats so json.dumps works.
         'val_loss': round(final_metrics['val'].item(), 4),
         'best_val_loss': round(float(best_val_loss), 4),
+        'best_iter': best_iter_num,
         'mfu': round(running_mfu, 4),
         'wandb_id': wandb.run.id if wandb_log else None,
+        'checkpoint_manifest': manifest_path,
+        'provenance': provenance,
     }
     if use_hybrid:
         record['causal_microsteps'] = causal_microsteps

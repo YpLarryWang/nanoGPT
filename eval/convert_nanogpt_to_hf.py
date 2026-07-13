@@ -13,6 +13,8 @@ Example:
       --out hf-models/bl100m-ln-mlp-learned
 """
 import argparse
+import hashlib
+import json
 import os
 import shutil
 import sys
@@ -41,6 +43,14 @@ AUTO_MAP = {
 
 def _clean(k):
     return k[len("_orig_mod."):] if k.startswith("_orig_mod.") else k
+
+
+def _sha256(path, chunk_size=8 * 1024 * 1024):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 def main():
@@ -82,6 +92,18 @@ def main():
         architectures=["NanoGPTForMaskedLM" if args.bidirectional else "NanoGPTForCausalLM"],
     )
     config.auto_map = AUTO_MAP
+    checkpoint_source = {
+        "filename": os.path.basename(args.ckpt),
+        "sha256": _sha256(args.ckpt),
+        "role": ckpt.get("checkpoint_role", "legacy_best"),
+        "iter_num": ckpt.get("iter_num"),
+        "num_updates": ckpt.get("num_updates", ckpt.get("iter_num")),
+        "tokens_seen": ckpt.get("tokens_seen"),
+        "words_seen": ckpt.get("words_seen"),
+        "labels": ckpt.get("checkpoint_labels", []),
+        "git_sha": ckpt.get("provenance", {}).get("git_sha"),
+    }
+    config.nanogpt_checkpoint = checkpoint_source
 
     model_cls = NanoGPTForMaskedLM if args.bidirectional else NanoGPTForCausalLM
     model = model_cls(config)
@@ -95,6 +117,9 @@ def main():
 
     os.makedirs(args.out, exist_ok=True)
     model.save_pretrained(args.out, safe_serialization=True)
+    with open(os.path.join(args.out, "checkpoint_source.json"), "w", encoding="utf-8") as f:
+        json.dump(checkpoint_source, f, indent=2)
+        f.write("\n")
     shutil.copy(os.path.join(HF_DIR, "modeling_nanogpt.py"), os.path.join(args.out, "modeling_nanogpt.py"))
 
     # add_prefix_space=True is REQUIRED. Our BPE was trained with it, so mid-stream words are
