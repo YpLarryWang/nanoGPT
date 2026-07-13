@@ -21,3 +21,4 @@ bl100m-d512L32-do0.1-gate-hyb8of16-bidir,RMS+SwiGLU(8/3)+RoPE+gate,100M,70.89,67
 bl100m-d512L32-do0.1-gate-aoa28-b32ga16,RMS+SwiGLU(8/3)+RoPE+gate,100M,69.72,60.48,59.71,63.46,87.97,72.12,61.88,67.91,68.65,ours(measured;AoA28 retrain;B32/GA16;evalB32;28/28 checkpoints;seed1337;2026-07-12)
 bl100m-d512L32-do0.1-gate-hyb15of16-b32ga16-bidir,RMS+SwiGLU(8/3)+RoPE+gate,100M,70.34,65.47,64.75,63.46,88.44,74.20,61.94,69.80,70.86,ours(measured;hyb15of16;bidirectional-attention GLUE;B32/GA16;seed1337;2026-07-12)
 bl100m-d512L32-do0.1-gate-hyb14of16-b32ga16-bidir,RMS+SwiGLU(8/3)+RoPE+gate,100M,70.58,65.31,60.43,63.46,90.17,73.61,62.25,69.40,70.39,ours(measured;hyb14of16;bidirectional-attention GLUE;B32/GA16;seed1337;2026-07-12)
+muon-bl10m-d512L32-do0.1-gate-attnres8,RMS+SwiGLU(8/3)+RoPE+gate,10M,67.09,58.54,62.59,61.54,82.28,64.61,49.37,63.72,64.08,ours(measured;Muon+AttnRes block8;AdamW finetune LR1e-4;seed42;vast 4x3090;2026-07-13)
