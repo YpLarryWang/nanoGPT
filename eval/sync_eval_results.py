@@ -332,8 +332,10 @@ def training_source_row(model: str, fields: list[str]) -> dict[str, str]:
         "n_embd": str(experiment.get("n_embd") or model_args.get("n_embd") or ""),
         "n_layer": str(experiment.get("n_layer") or model_args.get("n_layer") or ""),
         "params_M": score(float(experiment["params_M"])) if experiment.get("params_M") else "",
-        "dropout": str(config.get("dropout", model_args.get("dropout", ""))),
-        "sampler": str(config.get("sampler", "")),
+        "dropout": str(experiment.get(
+            "dropout", config.get("dropout", model_args.get("dropout", ""))
+        )),
+        "sampler": str(experiment.get("sampler", config.get("sampler", ""))),
         "train_words": infer_train_words(model),
         "best_val_loss": str(
             experiment.get("best_val_loss") or checkpoint.get("best_val_loss") or ""
