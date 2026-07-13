@@ -78,7 +78,51 @@ def diagnose_word_start_mismatch(
     print("no per-line mismatch found; inspect source-boundary handling")
 
 
-def build_word_starts(data_dir: Path, tokenizer_path: Path, output: Path) -> np.memmap:
+def clear_unicode_whitespace_markers(
+    train_bin: np.ndarray,
+    marks_out: np.ndarray,
+    tokenizer: Tokenizer,
+    whitespace_chars: set[str],
+    *,
+    chunk_size: int = 16 * 1024 * 1024,
+) -> list[dict]:
+    """Remove false ``Ġ`` starts caused by non-ASCII whitespace byte sequences."""
+    corrections = []
+    for char in sorted(whitespace_chars):
+        sequence = np.asarray(tokenizer.encode(char).ids, dtype=np.uint16)
+        if not len(sequence) or not tokenizer.decode(sequence.tolist()).isspace():
+            raise ValueError(f"could not derive a pure-whitespace token sequence for U+{ord(char):04X}")
+        corrected = 0
+        for start in range(0, len(train_bin), chunk_size):
+            logical_stop = min(start + chunk_size, len(train_bin))
+            stop = min(logical_stop + len(sequence) - 1, len(train_bin))
+            view = train_bin[start:stop]
+            if len(view) < len(sequence):
+                continue
+            candidates = np.flatnonzero(view[: len(view) - len(sequence) + 1] == sequence[0])
+            for offset, token_id in enumerate(sequence[1:], start=1):
+                candidates = candidates[view[candidates + offset] == token_id]
+            positions = start + candidates
+            positions = positions[positions < logical_stop]
+            positions = positions[marks_out[positions] == 1]
+            marks_out[positions] = 0
+            corrected += len(positions)
+        corrections.append(
+            {
+                "codepoint": f"U+{ord(char):04X}",
+                "repr": repr(char),
+                "token_ids": [int(x) for x in sequence],
+                "markers_cleared": corrected,
+            }
+        )
+    return corrections
+
+
+def build_word_starts(
+    data_dir: Path,
+    tokenizer_path: Path,
+    output: Path,
+) -> tuple[np.memmap, list[dict]]:
     """Mark first BPE token of every whitespace word directly in train.bin.
 
     The tokenizer was trained with ByteLevel(add_prefix_space=True). Cleaning
@@ -107,6 +151,7 @@ def build_word_starts(data_dir: Path, tokenizer_path: Path, output: Path) -> np.
     marks_out.flush()
 
     clean_words = 0
+    unicode_whitespace: set[str] = set()
     for source in SOURCES:
         path = data_dir / "clean" / "train" / f"{source}.txt"
         with path.open(encoding="utf-8") as f:
@@ -114,6 +159,16 @@ def build_word_starts(data_dir: Path, tokenizer_path: Path, output: Path) -> np.
                 text = line.rstrip("\n")
                 if text and text != EOT:
                     clean_words += len(text.split())
+                    unicode_whitespace.update(
+                        char for char in text if char.isspace() and char != " "
+                    )
+    corrections = clear_unicode_whitespace_markers(
+        train_bin,
+        marks_out,
+        tokenizer,
+        unicode_whitespace,
+    )
+    marks_out.flush()
     marked_words = int(marks_out.sum(dtype=np.uint64))
     if marked_words != clean_words:
         diagnose_word_start_mismatch(data_dir, tokenizer, lookup)
@@ -121,7 +176,7 @@ def build_word_starts(data_dir: Path, tokenizer_path: Path, output: Path) -> np.
             "word-start/tokenizer invariant failed: "
             f"train.bin marks {marked_words:,} words but clean text has {clean_words:,}"
         )
-    return marks_out
+    return marks_out, corrections
 
 
 def shuffle_starts(
@@ -217,11 +272,14 @@ def main() -> None:
     word_map_path = args.word_map or data_dir / "train.word_starts.uint8"
     if word_map_path.exists():
         word_starts = np.memmap(word_map_path, dtype=np.uint8, mode="r")
+        word_start_corrections = []
         train_len = os.path.getsize(data_dir / "train.bin") // np.dtype(np.uint16).itemsize
         if len(word_starts) != train_len:
             raise ValueError(f"word map has {len(word_starts)} entries; train.bin has {train_len}")
     else:
-        word_starts = build_word_starts(data_dir, tokenizer_path, word_map_path)
+        word_starts, word_start_corrections = build_word_starts(
+            data_dir, tokenizer_path, word_map_path
+        )
 
     local_grad_accum = args.global_grad_accum // args.world_size
     starts = shuffle_starts(
@@ -308,6 +366,7 @@ def main() -> None:
             "words": "whitespace words counted when their first BPE token occurs in a sampled x window",
             "tokens": "BPE tokens in sampled x windows",
             "checkpoint_rounding": "nearest completed optimizer update",
+            "unicode_whitespace_corrections": word_start_corrections,
         },
         "cumulative_words": cumulative_words,
         "checkpoints": checkpoints,

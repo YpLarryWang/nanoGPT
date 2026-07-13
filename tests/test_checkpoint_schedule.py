@@ -95,7 +95,8 @@ def test_word_start_map_matches_clean_whitespace_words(tmp_path):
     paths = []
     for i, source in enumerate(SOURCES):
         path = clean_dir / f"{source}.txt"
-        path.write_text(f"alpha beta {i}\ncan't stop!\n", encoding="utf-8")
+        extra = "left \u1680 right\n" if i == 0 else ""
+        path.write_text(f"alpha beta {i}\ncan't stop!\n{extra}", encoding="utf-8")
         paths.append(str(path))
 
     tokenizer = Tokenizer(BPE())
@@ -127,5 +128,8 @@ def test_word_start_map_matches_clean_whitespace_words(tmp_path):
             previous = eot_id
     np.asarray(ids, dtype=np.uint16).tofile(data_dir / "train.bin")
 
-    marks = build_word_starts(data_dir, tokenizer_path, data_dir / "words.uint8")
-    assert int(marks.sum()) == len(SOURCES) * 5
+    marks, corrections = build_word_starts(data_dir, tokenizer_path, data_dir / "words.uint8")
+    assert int(marks.sum()) == len(SOURCES) * 5 + 2
+    assert len(corrections) == 1
+    assert corrections[0]["codepoint"] == "U+1680"
+    assert corrections[0]["markers_cleared"] == 1
