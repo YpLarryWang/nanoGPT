@@ -93,6 +93,11 @@ fi
 
 echo ">> done: $VARIANT  (results under $EVAL_REPO/results/$VARIANT)"
 SYNC_ARGS=("$RESULT_NAME" --eval-repo "$EVAL_REPO" --backend causal)
+# A non-final role changes the HF/result directory name (for example
+# ``run-best``), but the scoreboard row should still describe the training run
+# recorded in experiments.jsonl.  Let the importer read scores from
+# RESULT_NAME while sourcing metadata under the original VARIANT name.
+if [ "$RESULT_NAME" != "$VARIANT" ]; then SYNC_ARGS+=(--csv-model "$VARIANT"); fi
 if [ "$FAST" = 1 ]; then SYNC_ARGS+=(--fast); else SYNC_ARGS+=(--full); fi
 if [ "$GLUE" = 1 ]; then SYNC_ARGS+=(--glue); fi
 echo ">> sync scoreboards"
