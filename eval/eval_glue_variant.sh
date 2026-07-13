@@ -7,6 +7,8 @@
 # Every task logs to the official "BabyLM Finetuning" W&B project.
 #
 # Usage: bash eval/eval_glue_variant.sh <variant>
+# For a memory-heavier architecture, set GLUE_MICROBATCH (for example 8).
+# Gradient accumulation then preserves each task's original effective batch.
 
 set -euo pipefail
 
@@ -17,6 +19,8 @@ VARIANT="${1:?usage: eval_glue_variant.sh <variant>}"
 : "${EVAL_REPO:=$DATA/repo/babylm-eval/strict}"
 : "${PY:=$DATA/envs/babylm-eval/bin/python}"
 : "${HF_ROOT:=$DATA/hf-models}"
+
+GLUE_MICROBATCH="${GLUE_MICROBATCH:-}"
 
 HFDIR="$HF_ROOT/$VARIANT"
 [[ -f "$HFDIR/config.json" ]] || { echo "no converted model: $HFDIR" >&2; exit 1; }
@@ -35,6 +39,19 @@ run_task () {
   local TASK="$1" LABELS="$2" BSZ="$3" EPOCHS="$4" SELECT_METRIC="$5"
   shift 5
   local METRICS=("$@")
+  local MICRO_BSZ="$BSZ" GA=1
+  if [[ -n "$GLUE_MICROBATCH" ]]; then
+    [[ "$GLUE_MICROBATCH" =~ ^[1-9][0-9]*$ ]] || {
+      echo "error: GLUE_MICROBATCH must be a positive integer" >&2
+      return 2
+    }
+    (( BSZ % GLUE_MICROBATCH == 0 )) || {
+      echo "error: effective batch $BSZ is not divisible by microbatch $GLUE_MICROBATCH" >&2
+      return 2
+    }
+    MICRO_BSZ="$GLUE_MICROBATCH"
+    GA=$((BSZ / MICRO_BSZ))
+  fi
   local OUT="results/$VARIANT/main/finetune/$TASK"
   local SAVED="models/$VARIANT/$TASK"
 
@@ -43,7 +60,7 @@ run_task () {
     return 1
   fi
 
-  echo "================ $VARIANT / $TASK (bsz=$BSZ epochs=$EPOCHS) ================"
+  echo "================ $VARIANT / $TASK (effective_bsz=$BSZ micro_bsz=$MICRO_BSZ ga=$GA epochs=$EPOCHS) ================"
   echo "start: $(date --iso-8601=seconds)"
   PYTHONUNBUFFERED=1 "$PY" -m evaluation_pipeline.finetune.run \
     --model_name_or_path "$HFDIR" \
@@ -53,6 +70,7 @@ run_task () {
     --task "$TASK" \
     --num_labels "$LABELS" \
     --batch_size "$BSZ" \
+    --gradient_accumulation "$GA" \
     --learning_rate 3e-5 \
     --num_epochs "$EPOCHS" \
     --sequence_length 512 \
