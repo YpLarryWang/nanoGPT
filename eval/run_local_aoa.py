@@ -43,6 +43,17 @@ def local_step_plan(run_dir: Path, manifest: dict, series: str) -> list[dict]:
     return plan
 
 
+def unfinished_steps(plan: list[dict], existing_results: dict | None) -> list[dict]:
+    if not existing_results:
+        return plan
+    completed = {
+        int(result["step"])
+        for result in existing_results.get("results", [])
+        if "step" in result
+    }
+    return [item for item in plan if item["step"] not in completed]
+
+
 def ensure_converted(
     item: dict,
     *,
@@ -109,6 +120,7 @@ def main() -> None:
     parser.add_argument("--max-checkpoints", type=int)
     parser.add_argument("--max-words", type=int)
     parser.add_argument("--max-contexts", type=int)
+    parser.add_argument("--resume", action="store_true")
     args = parser.parse_args()
 
     run_dir = args.run_dir.resolve()
@@ -124,13 +136,21 @@ def main() -> None:
     )
 
     manifest = json.loads((run_dir / "checkpoint_manifest.json").read_text(encoding="utf-8"))
-    plan = local_step_plan(run_dir, manifest, args.series)
+    full_plan = local_step_plan(run_dir, manifest, args.series)
     if args.max_checkpoints is not None:
-        plan = plan[: args.max_checkpoints]
-    if not plan:
+        full_plan = full_plan[: args.max_checkpoints]
+    if not full_plan:
         raise SystemExit(f"manifest has no {args.series!r} checkpoints")
 
-    local_paths = {}
+    result_dir = output_dir / run_dir.name
+    result_dir.mkdir(parents=True, exist_ok=True)
+    resume_file = result_dir / "resume" / "surprisal.json" if args.resume else None
+    existing_results = None
+    if resume_file and resume_file.is_file():
+        existing_results = json.loads(resume_file.read_text(encoding="utf-8"))
+    plan = unfinished_steps(full_plan, existing_results)
+
+    local_paths = {item["step"]: cache_dir / item["revision"] for item in full_plan}
     for item in plan:
         local_paths[item["step"]] = ensure_converted(
             item,
@@ -149,10 +169,6 @@ def main() -> None:
     from evaluation_pipeline.AoA_word.eval_util import JsonProcessor, load_eval
     from evaluation_pipeline.AoA_word.evaluation_functions import StepSurprisalExtractor
     from evaluation_pipeline.utils import AoAEvaluator
-
-    class LocalConfig:
-        steps = [item["step"] for item in plan]
-        word_counts = [item["step"] for item in plan]
 
     class LocalStepSurprisalExtractor(StepSurprisalExtractor):
         def _path(self, step: int) -> Path:
@@ -179,15 +195,33 @@ def main() -> None:
         contexts = [items[: args.max_contexts] for items in contexts]
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
-    extractor = LocalStepSurprisalExtractor(
-        config=LocalConfig(),
-        model_name=str(cache_dir),
-        backend="causal",
-        device=device,
-    )
-    results = extractor.analyze_steps(contexts=contexts, target_words=target_words)
+    if plan:
+        class LocalConfig:
+            steps = [item["step"] for item in plan]
+            word_counts = [item["step"] for item in plan]
+
+        if resume_file:
+            resume_file.parent.mkdir(parents=True, exist_ok=True)
+        extractor = LocalStepSurprisalExtractor(
+            config=LocalConfig(),
+            model_name=str(cache_dir),
+            backend="causal",
+            device=device,
+        )
+        results = extractor.analyze_steps(
+            contexts=contexts,
+            target_words=target_words,
+            resume_path=resume_file,
+        )
+    elif existing_results:
+        results = existing_results
+    else:
+        raise RuntimeError("no unfinished checkpoints and no resumable results")
+
     results["metadata"].update(
         {
+            "total_steps": len(full_plan),
+            "completed_steps": len({result["step"] for result in results["results"]}),
             "run_name": manifest.get("run_name", run_dir.name),
             "series": args.series,
             "local_checkpoint_paths": True,
@@ -197,23 +231,23 @@ def main() -> None:
                     for key, value in item.items()
                     if key != "sha256"
                 }
-                for item in plan
+                for item in full_plan
             ],
         }
     )
 
-    result_dir = output_dir / run_dir.name
-    result_dir.mkdir(parents=True, exist_ok=True)
     result_file = result_dir / "surprisal.json"
     JsonProcessor.save_json(results, result_file)
 
     score = AoAEvaluator(word_path.parent / "cdi_human.csv").compute_curve_fitness(
         results,
-        AutoTokenizer.from_pretrained(local_paths[plan[-1]["step"]], trust_remote_code=True),
+        AutoTokenizer.from_pretrained(
+            local_paths[full_plan[-1]["step"]], trust_remote_code=True
+        ),
     )
     JsonProcessor.save_json({"aoa": score}, result_dir / "aoa_score.json")
     print(
-        f"local AoA complete: checkpoints={len(plan)} words={len(target_words)} "
+        f"local AoA complete: checkpoints={len(full_plan)} words={len(target_words)} "
         f"contexts={sum(map(len, contexts))} device={device} output={result_dir}"
     )
 

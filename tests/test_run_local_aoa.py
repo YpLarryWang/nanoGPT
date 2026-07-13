@@ -1,6 +1,6 @@
 from pathlib import Path
 
-from eval.run_local_aoa import local_step_plan
+from eval.run_local_aoa import local_step_plan, unfinished_steps
 
 
 def test_local_step_plan_uses_target_counts_and_word_series(tmp_path: Path):
@@ -39,3 +39,9 @@ def test_local_step_plan_uses_target_counts_and_word_series(tmp_path: Path):
             "sha256": "abc",
         }
     ]
+
+
+def test_unfinished_steps_filters_completed_checkpoints():
+    plan = [{"step": 1_000_000}, {"step": 2_000_000}, {"step": 3_000_000}]
+    existing = {"results": [{"step": 1_000_000}, {"step": 2_000_000}]}
+    assert unfinished_steps(plan, existing) == [{"step": 3_000_000}]
