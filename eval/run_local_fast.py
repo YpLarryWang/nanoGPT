@@ -116,7 +116,10 @@ def main() -> None:
     scratch_root.mkdir(parents=True, exist_ok=True)
 
     env = os.environ.copy()
-    env["PATH"] = f"{Path(args.python).resolve().parent}:{env.get('PATH', '')}"
+    # Keep the venv's bin directory itself on PATH. Resolving the ``python``
+    # symlink would point at /usr/bin and make the upstream shell script lose
+    # the venv's bare ``python`` executable.
+    env["PATH"] = f"{Path(args.python).expanduser().absolute().parent}:{env.get('PATH', '')}"
     env["PYTHONUNBUFFERED"] = "1"
     completed = 0
     for index, item in enumerate(plan, start=1):
