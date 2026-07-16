@@ -224,6 +224,7 @@ def main() -> None:
             "completed_steps": len({result["step"] for result in results["results"]}),
             "run_name": manifest.get("run_name", run_dir.name),
             "series": args.series,
+            "min_context": args.min_context,
             "local_checkpoint_paths": True,
             "checkpoint_plan": [
                 {
