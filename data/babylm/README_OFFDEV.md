@@ -64,3 +64,18 @@ The 10M schedule has 19 word labels, 20 token labels, and 37 unique saved
 updates. The 100M schedule has 28 word labels, 31 token labels, and 57 unique
 saved updates. The final checkpoints are always retained even when the final
 exposure is not an integer milestone.
+
+The JetStream 20GB MIG depth/AttnRes matrix uses B8/GA64 schedules. To run the
+four seed-1337 configurations only after all four two-update smoke tests pass:
+
+```bash
+tmux new-session -d -s offdev10m-2x2-s1337 \
+  'cd /media/volume/yupei-data/repo/nanoGPT && \
+   bash run_babylm_offdev_10m_2x2_s1337.sh'
+```
+
+The queue requires at least 220GB free, an idle GPU, W&B authentication, exact
+data/schedule fingerprints, and unused output names. It stops before the next
+configuration on a nonzero exit, OOM, traceback, schedule mismatch, NaN/Inf,
+or insufficient disk. Its combined log is
+`logs/offdev-10m-2x2/offdev10m-2x2-s1337.queue.log`.

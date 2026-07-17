@@ -113,6 +113,13 @@ missing or its parameters disagree with the run. `train.py` also rejects every
 formal offdev W&B run that omits `checkpoint_schedule`, so alternate runners
 cannot silently skip AoA coverage.
 
+For the 10M depth x AttnRes matrix on JetStream's 20GB MIG, use B8/GA64 (the
+same 262,144 tokens/update) for both baselines and AttnRes variants. The
+committed seed-1337 queue `run_babylm_offdev_10m_2x2_s1337.sh` first smokes,
+then serially runs L32 baseline, L32 AttnRes8, L16 baseline, and L16 AttnRes4.
+It is intentionally limited to those first four runs; do not silently extend
+it to seeds 1338/1339 before reviewing the seed-1337 results.
+
 ## 2. Current decision snapshot
 
 ### 100M
