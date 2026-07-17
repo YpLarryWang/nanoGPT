@@ -41,3 +41,25 @@ AoA schedules; never copy 466 or 4740 from the legacy datasets.
 
 All formal run names on these datasets include `-offdev` and use dataset names
 `babylm_officialdev` or `babylm_100m_officialdev`.
+
+## Formal AoA schedules
+
+Formal B32/GA16 single-GPU runs always pass a dual actual-word/BPE-token
+checkpoint schedule. The committed schedules cover sampler seeds 1337, 1338,
+and 1339 for both tracks. Because shuffled word exposure is seed-dependent,
+never use one seed's schedule for another seed; `train.py` validates this and
+the remaining schedule parameters before training starts.
+
+Use the offdev-only runner for the current `d512L32-do0.1-gate` architecture:
+
+```bash
+PY=/media/volume/yupei-data/envs/nanogpt/bin/python \
+  CUDA_VISIBLE_DEVICES=0 bash run_babylm_offdev_aoa.sh 10m 1337
+PY=/media/volume/yupei-data/envs/nanogpt/bin/python \
+  CUDA_VISIBLE_DEVICES=0 bash run_babylm_offdev_aoa.sh 100m 1337
+```
+
+The 10M schedule has 19 word labels, 20 token labels, and 37 unique saved
+updates. The 100M schedule has 28 word labels, 31 token labels, and 57 unique
+saved updates. The final checkpoints are always retained even when the final
+exposure is not an integer milestone.

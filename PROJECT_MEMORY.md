@@ -1,6 +1,6 @@
 # BabyLM 2026 Project Memory
 
-> Last updated: 2026-07-16. This file is the durable handoff for the current
+> Last updated: 2026-07-17. This file is the durable handoff for the current
 > submission phase. Read it together with `AGENTS.md`; when the two disagree,
 > prefer newer measured data and verify the relevant CSV/raw artifact before
 > acting. Some historical prose in `AGENTS.md` and `eval/results/README.md`
@@ -96,6 +96,20 @@ Both datasets passed a two-update GPU smoke with shuffle sampling and official
 dev validation (`wandb_log=False`, logs/checkpoints under `/tmp`): final smoke
 validation loss was 9.6844 for 10M and 9.6786 for 100M. These losses only prove
 the data/training path executes; they are not experimental results.
+
+The formal B32/GA16 AoA schedules are committed for sampler seeds 1337/1338/1339.
+Every new formal run must pass its seed-specific dual schedule; the word ladder
+depends on shuffle order even though the token ladder does not. At seed 1337:
+
+| track | final words | final tokens | word labels | token labels | unique checkpoints |
+|---|---:|---:|---:|---:|---:|
+| 10M offdev | 90,343,884 | 123,469,824 | 19 | 20 | 37 |
+| 100M offdev | 910,196,864 | 1,257,504,768 | 28 | 31 | 57 |
+
+Use `run_babylm_offdev_aoa.sh`; do not repoint the legacy AoA runners or their
+old schedule files. The offdev runner includes `-offdev` in W&B/output names,
+uses max iterations 471/4797, and fails closed if the seed-specific schedule is
+missing or its parameters disagree with the run.
 
 ## 2. Current decision snapshot
 
