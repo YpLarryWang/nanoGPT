@@ -48,7 +48,8 @@ Formal B32/GA16 single-GPU runs always pass a dual actual-word/BPE-token
 checkpoint schedule. The committed schedules cover sampler seeds 1337, 1338,
 and 1339 for both tracks. Because shuffled word exposure is seed-dependent,
 never use one seed's schedule for another seed; `train.py` validates this and
-the remaining schedule parameters before training starts.
+the remaining schedule parameters before training starts. It also rejects a
+formal offdev W&B run that omits `checkpoint_schedule` entirely.
 
 Use the offdev-only runner for the current `d512L32-do0.1-gate` architecture:
 

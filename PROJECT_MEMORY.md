@@ -109,7 +109,9 @@ depends on shuffle order even though the token ladder does not. At seed 1337:
 Use `run_babylm_offdev_aoa.sh`; do not repoint the legacy AoA runners or their
 old schedule files. The offdev runner includes `-offdev` in W&B/output names,
 uses max iterations 471/4797, and fails closed if the seed-specific schedule is
-missing or its parameters disagree with the run.
+missing or its parameters disagree with the run. `train.py` also rejects every
+formal offdev W&B run that omits `checkpoint_schedule`, so alternate runners
+cannot silently skip AoA coverage.
 
 ## 2. Current decision snapshot
 

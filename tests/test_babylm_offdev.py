@@ -161,6 +161,19 @@ class OffdevProtocolTest(unittest.TestCase):
             "babylm_officialdev", False, "smoke"
         )
 
+    def test_offdev_wandb_checkpoint_schedule_is_enforced(self):
+        with self.assertRaisesRegex(ValueError, "must set checkpoint_schedule"):
+            constants.validate_offdev_checkpoint_schedule(
+                "babylm_officialdev", True, ""
+            )
+        constants.validate_offdev_checkpoint_schedule(
+            "babylm_officialdev", True, "config/checkpoint_schedules/offdev.json"
+        )
+        constants.validate_offdev_checkpoint_schedule(
+            "babylm_officialdev", False, ""
+        )
+        constants.validate_offdev_checkpoint_schedule("babylm", True, "")
+
 
 if __name__ == "__main__":
     unittest.main()

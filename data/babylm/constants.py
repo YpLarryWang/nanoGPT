@@ -32,3 +32,11 @@ def validate_offdev_wandb_name(dataset: str, wandb_log: bool, run_name: str) -> 
     """Fail closed when a formal offdev W&B run lacks its protocol tag."""
     if dataset in OFFDEV_DATASETS and wandb_log and "-offdev" not in run_name:
         raise ValueError(f"official-dev W&B run name must contain '-offdev': {run_name!r}")
+
+
+def validate_offdev_checkpoint_schedule(
+    dataset: str, wandb_log: bool, checkpoint_schedule: str
+) -> None:
+    """Require AoA checkpoint coverage for every formal offdev run."""
+    if dataset in OFFDEV_DATASETS and wandb_log and not checkpoint_schedule:
+        raise ValueError("official-dev W&B runs must set checkpoint_schedule for AoA")
