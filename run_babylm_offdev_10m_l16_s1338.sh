@@ -1,8 +1,10 @@
 #!/usr/bin/env bash
-# Smoke and then run the seed-1338 10M offdev L16 baseline/AttnRes4 pair.
+# Smoke and then run a seed-1338/1339 10M offdev L16 baseline/AttnRes4 pair.
 # Intended launch:
 #   tmux new-session -d -s offdev10m-l16-s1338 \
 #     'cd /media/volume/yupei-data/repo/nanoGPT && bash run_babylm_offdev_10m_l16_s1338.sh'
+# The no-argument default remains seed 1338 for backward compatibility. The
+# seed-1339 wrapper invokes this runner with an explicit 1339 argument.
 
 set -euo pipefail
 
@@ -12,22 +14,26 @@ cd "$REPO_ROOT"
 PY="${PY:-/media/volume/yupei-data/envs/nanogpt/bin/python}"
 export CUDA_VISIBLE_DEVICES="${CUDA_VISIBLE_DEVICES:-0}"
 DATASET=babylm_officialdev
-SEED=1338
+SEED="${1:-1338}"
+case "$SEED" in
+  1338|1339) ;;
+  *) echo "usage: $0 [1338|1339]" >&2; exit 2 ;;
+esac
 B=8
 GA=64
 MAX_ITERS=471
-SCHEDULE=config/checkpoint_schedules/bl10m-offdev-b8ga64-s1338-dual.json
+SCHEDULE="config/checkpoint_schedules/bl10m-offdev-b8ga64-s${SEED}-dual.json"
 MIN_FREE_GB=220
-QUEUE_NAME=offdev10m-l16-s1338
-LOG_DIR=logs/offdev-10m-l16-s1338
+QUEUE_NAME="offdev10m-l16-s${SEED}"
+LOG_DIR="logs/offdev-10m-l16-s${SEED}"
 QUEUE_LOG="$LOG_DIR/${QUEUE_NAME}.queue.log"
 DONE_MARKER=results/${QUEUE_NAME}.queue.done
 FAILED_MARKER=results/${QUEUE_NAME}.queue.failed
 LOCK_DIR=/tmp/${QUEUE_NAME}.lock
 
 NAMES=(
-  bl10m-d512L16-do0.1-gate-offdev-aoaw19-aoat20-u37-b8ga64-s1338
-  bl10m-d512L16-do0.1-gate-attnres4-offdev-aoaw19-aoat20-u37-b8ga64-s1338
+  "bl10m-d512L16-do0.1-gate-offdev-aoaw19-aoat20-u37-b8ga64-s${SEED}"
+  "bl10m-d512L16-do0.1-gate-attnres4-offdev-aoaw19-aoat20-u37-b8ga64-s${SEED}"
 )
 
 fail() {
@@ -189,7 +195,7 @@ for name in "${NAMES[@]}"; do
   fi
 done
 
-"$PY" - "$SCHEDULE" <<'PYCODE'
+"$PY" - "$SCHEDULE" "$SEED" <<'PYCODE'
 import hashlib
 import json
 import pathlib
@@ -203,6 +209,7 @@ def sha256(path):
     return digest.hexdigest()
 
 payload = json.load(open(sys.argv[1], encoding="utf-8"))
+expected_seed = int(sys.argv[2])
 params = payload["parameters"]
 labels = [label for checkpoint in payload["checkpoints"] for label in checkpoint["labels"]]
 assert params["max_iters"] == 471
@@ -211,7 +218,7 @@ assert params["batch_size"] == 8
 assert params["global_grad_accum"] == 64
 assert params["world_size"] == 1
 assert params["tokens_per_iter"] == 262144
-assert params["sampler_seed"] == 1338
+assert params["sampler_seed"] == expected_seed
 assert sum(label["series"] == "words" for label in labels) == 19
 assert sum(label["series"] == "tokens" for label in labels) == 20
 assert len(payload["checkpoints"]) == 37
@@ -224,17 +231,17 @@ actual = {
     "word_map_sha256": sha256(root / "train.word_starts.uint8"),
 }
 assert actual == payload["fingerprints"], (actual, payload["fingerprints"])
-print("validated s1338 B8/GA64 schedule and all data fingerprints")
+print(f"validated s{expected_seed} B8/GA64 schedule and all data fingerprints")
 PYCODE
 
-echo "==== phase 1: two seed-1338 L16 2-update smoke tests ===="
+echo "==== phase 1: two seed-${SEED} L16 2-update smoke tests ===="
 run_smoke "${NAMES[0]}" 0
 run_smoke "${NAMES[1]}" 4
 
-echo "==== phase 2: seed-1338 L16 formal pair ===="
+echo "==== phase 2: seed-${SEED} L16 formal pair ===="
 run_formal "${NAMES[0]}" 0
 run_formal "${NAMES[1]}" 4
 
 printf '%s sha=%s log=%s\n' "$(date --iso-8601=seconds)" "$(git rev-parse HEAD)" "$QUEUE_LOG" \
   > "$DONE_MARKER"
-echo "==== seed-1338 offdev 10M L16 pair complete ===="
+echo "==== seed-${SEED} offdev 10M L16 pair complete ===="
