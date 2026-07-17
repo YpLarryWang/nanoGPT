@@ -15,11 +15,13 @@ Cleaning policy (decided together):
     keep newlines, no per-row EOT
 
 Architecture: one pure function per source, returning the cleaned line or None to
-drop it; a shared normalize() runs on every survivor. Output is per-source so
-Lesson 2 can carve a contiguous validation slice from each source.
+drop it; a shared normalize() runs on every survivor. The official-dev protocol
+cleans train and dev independently into clean/{train,val}; it never carves a
+validation tail from train.
 
 Usage (run where the raw data lives, e.g. the GPU box):
-    python clean.py --raw-dir <snapshot_dir> --out-dir clean
+    python clean.py --input-split train --raw-dir raw/train --out-dir clean/train
+    python clean.py --input-split dev   --raw-dir raw/dev   --out-dir clean/val
 """
 
 import argparse
@@ -28,8 +30,10 @@ import re
 import unicodedata
 from collections import Counter
 
-SOURCES = ["bnc_spoken", "childes", "gutenberg",
-           "open_subtitles", "simple_wiki", "switchboard"]
+try:
+    from .constants import EOT, RAW_FILENAME_TEMPLATES, SOURCES
+except ImportError:  # direct script execution
+    from constants import EOT, RAW_FILENAME_TEMPLATES, SOURCES
 
 # --------------------------------------------------------------------------- #
 # shared normalization  [GIVEN -- read it; you don't need to change it]
@@ -58,8 +62,6 @@ def has_letters_and_digits(line):
 # Lesson 2: structural boundaries become this sentinel instead of being dropped.
 # prepare.py maps it to one <|endoftext|> special token, dedups runs, and inserts
 # it between the 6 sources. It survives normalize() and the alnum guard intact.
-EOT = "<|endoftext|>"
-
 # --------------------------------------------------------------------------- #
 # regexes -- THREE are given, TWO are yours to write (see Lesson 1)
 # --------------------------------------------------------------------------- #
@@ -197,7 +199,8 @@ def clean_one(raw_path, out_path, source):
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--raw-dir", required=True, help="dir with <source>.train.txt files")
+    ap.add_argument("--input-split", choices=sorted(RAW_FILENAME_TEMPLATES), default="train")
+    ap.add_argument("--raw-dir", required=True, help="directory holding the selected raw split")
     ap.add_argument("--out-dir", default="clean", help="dir to write <source>.txt files")
     ap.add_argument("--sources", nargs="*", default=SOURCES)
     args = ap.parse_args()
@@ -205,7 +208,8 @@ def main():
 
     grand_kept = grand_dropped = 0
     for source in args.sources:
-        raw_path = os.path.join(args.raw_dir, f"{source}.train.txt")
+        raw_name = RAW_FILENAME_TEMPLATES[args.input_split].format(source=source)
+        raw_path = os.path.join(args.raw_dir, raw_name)
         out_path = os.path.join(args.out_dir, f"{source}.txt")
         kept, dropped, suspects, allcaps = clean_one(raw_path, out_path, source)
         grand_kept += kept

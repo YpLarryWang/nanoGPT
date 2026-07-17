@@ -19,9 +19,10 @@ from pathlib import Path
 import numpy as np
 from tokenizers import Tokenizer
 
-EOT = "<|endoftext|>"
-SOURCES = ["bnc_spoken", "childes", "gutenberg",
-           "open_subtitles", "simple_wiki", "switchboard"]
+try:
+    from .constants import EOT, SOURCES
+except ImportError:  # direct script execution
+    from constants import EOT, SOURCES
 
 
 def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:

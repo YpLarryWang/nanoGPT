@@ -1,9 +1,10 @@
-"""
-BabyLM 2026 -- Stage 1.5: carve the validation split.  [GIVEN -- you don't edit this.]
+"""Legacy BabyLM tail-validation splitter.
 
-"Split before you fit anything, including the tokenizer." Runs AFTER clean.py and
-BEFORE train_bpe.py, so the BPE only ever sees train. prepare.py (Stage 3) imports
-the SAME split_index() here, so the sweep and the final bins agree on the split.
+Do not use this for new official-dev runs. It is retained only to reproduce the
+historical experiments whose validation data was a ~1% tail of official train.
+
+Historical sequence: run this after clean.py and before train_bpe.py. The current
+official-dev pipeline does not call or import this module.
 
 Strategy (Lesson 2 decision -- "carve first, train-only", ~1% val):
   * val = the contiguous TAIL of each source's cleaned file (per-source, so every
@@ -20,9 +21,10 @@ Usage (on the box where clean/ lives, via the venv python):
 import argparse
 import os
 
-SOURCES = ["bnc_spoken", "childes", "gutenberg",
-           "open_subtitles", "simple_wiki", "switchboard"]
-EOT = "<|endoftext|>"
+try:
+    from .constants import EOT, SOURCES
+except ImportError:  # direct script execution
+    from constants import EOT, SOURCES
 VAL_FRAC = 0.01
 BOUNDARY_SOURCES = {"childes", "gutenberg"}   # emit EOT -> snap the cut to a boundary
 

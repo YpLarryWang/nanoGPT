@@ -36,6 +36,7 @@ from torch.distributed import init_process_group, destroy_process_group
 from model import GPTConfig, GPT
 from masked_data import MaskedData
 from checkpoint_schedule import CheckpointSchedule, at_update_budget, rounded_word_tag
+from data.babylm.constants import validate_offdev_wandb_name
 
 # -----------------------------------------------------------------------------
 # default config values designed to train a gpt2 (124M) on OpenWebText
@@ -117,6 +118,7 @@ if eval_batch_size <= 0:
     eval_batch_size = batch_size
 config['eval_batch_size'] = eval_batch_size
 assert eval_batch_size > 0
+validate_offdev_wandb_name(dataset, wandb_log, wandb_run_name)
 # -----------------------------------------------------------------------------
 
 # various inits, derived attributes, I/O setup

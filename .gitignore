@@ -30,6 +30,10 @@ data/babylm/tokenizer/
 data/babylm_100m/raw/
 data/babylm_100m/clean/
 data/babylm_100m/tokenizer/
+
+# official-train/dev protocol artifacts (pipeline code remains in data/babylm/)
+data/babylm_officialdev/
+data/babylm_100m_officialdev/
 # ablation completion markers (runtime, not code)
 results/*.done
 

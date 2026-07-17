@@ -8,19 +8,23 @@ trains a tokenizer per vocab size and reports the 4 metrics. Two backends:
                  on a subset/small vocab to see your own code make a real tokenizer
 
 Pipeline:
-    python tutorials/test_tokenizer.py                                   # prove bpe.py == HF
-    python data/babylm/split.py      --clean-dir data/babylm/clean       # carve once
-    python data/babylm/train_bpe.py  --clean-dir data/babylm/clean       # the sweep (hf)
+    clean official train -> clean/train
+    clean official dev   -> clean/val
+    python data/babylm/train_bpe.py --clean-dir <data-dir>/clean --out-dir <data-dir>/tokenizer
     # see your own code run on real data, small:
     python data/babylm/train_bpe.py  --impl ours --sources childes --vocab-sizes 8000
 Lesson: tutorials/teach/lessons/0002-tokenizer.html
 """
 import argparse
+import hashlib
+import json
 import os
 
-import split   # the shared carve (same directory)
+try:
+    from .constants import EOT, SOURCES
+except ImportError:  # direct script execution
+    from constants import EOT, SOURCES
 
-EOT = split.EOT
 VOCAB_SIZES = [8000, 16000, 32000]
 
 # --- baby-GPT config: used ONLY for the embedding-param-share metric ----------
@@ -66,10 +70,17 @@ def train_paths(clean_dir, sources):
     for s in sources:
         p = os.path.join(clean_dir, "train", s + ".txt")
         if not os.path.exists(p):
-            raise SystemExit(f"missing {p} -- run "
-                             f"`python data/babylm/split.py --clean-dir {clean_dir}` first")
+            raise SystemExit(f"missing {p} -- clean the complete official train split first")
         paths.append(p)
     return paths
+
+
+def sha256_file(path, chunk_size=8 * 1024 * 1024):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 # --- metrics  [GIVEN] ---------------------------------------------------------
@@ -123,7 +134,7 @@ def main():
     ap.add_argument("--clean-dir", default="data/babylm/clean")
     ap.add_argument("--out-dir", default="data/babylm/tokenizer")
     ap.add_argument("--impl", choices=["hf", "ours"], default="hf")
-    ap.add_argument("--sources", nargs="*", default=split.SOURCES)
+    ap.add_argument("--sources", nargs="*", default=SOURCES)
     ap.add_argument("--vocab-sizes", nargs="*", type=int, default=VOCAB_SIZES)
     ap.add_argument("--add-prefix-space", action=argparse.BooleanOptionalAction, default=True)
     args = ap.parse_args()
@@ -133,6 +144,7 @@ def main():
     print(f"impl={args.impl}  train words: {n_words:,}\n")
 
     rows = []
+    outputs = []
     for V in args.vocab_sizes:
         tok = build_and_train(args.impl, V, paths, add_prefix_space=args.add_prefix_space)
         dest = save_tokenizer(tok, args.impl, args.out_dir, V)
@@ -140,7 +152,28 @@ def main():
         emb = V * N_EMBD
         rows.append((V, n_tok, n_words / n_tok, avg_probe_tokens(tok),
                      emb, emb / (emb + NON_EMBD)))
+        outputs.append({"vocab_size": V, "path": os.path.basename(dest),
+                        "sha256": sha256_file(dest)})
         print(f"saved {dest}")
+
+    manifest = {
+        "schema_version": 1,
+        "protocol": "official-train-dev-v1",
+        "tokenizer_inputs": [
+            {"path": os.path.abspath(path), "sha256": sha256_file(path)}
+            for path in paths
+        ],
+        "dev_in_tokenizer_inputs": False,
+        "train_words": n_words,
+        "implementation": args.impl,
+        "add_prefix_space": args.add_prefix_space,
+        "special_tokens": [EOT],
+        "outputs": outputs,
+    }
+    os.makedirs(args.out_dir, exist_ok=True)
+    with open(os.path.join(args.out_dir, "tokenizer_manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+        f.write("\n")
 
     print(f"\n{'vocab':>7} {'tokens':>14} {'words/tok':>10} "
           f"{'probe avg':>10} {'emb params':>12} {'emb share':>10}")

@@ -1,14 +1,19 @@
-# BabyLM: tokenize the carved clean splits into train.bin/val.bin + meta.pkl.
+# BabyLM: tokenize independent official train/dev clean splits into train.bin/val.bin + meta.pkl.
 #   clean/{train,val}/*.txt  --(16k byte-level BPE)-->  uint16 stream + meta.pkl
 # Run from repo root (strict-small):  python data/babylm/prepare.py
 #   for the 100M strict set:          python data/babylm/prepare.py --data-dir data/babylm_100m
 
 import argparse
+import hashlib
+import json
 import os
 import pickle
 import numpy as np
 from tokenizers import Tokenizer
-from split import SOURCES
+try:
+    from .constants import EOT, SOURCES
+except ImportError:  # direct script execution
+    from constants import EOT, SOURCES
 
 
 ap = argparse.ArgumentParser()
@@ -21,7 +26,7 @@ DATA_DIR = args.data_dir
 TOKENIZER_NAME = args.tokenizer
 TOKENIZER_PATH = os.path.join(DATA_DIR, "tokenizer", TOKENIZER_NAME)
 
-EOT_TEXT = "<|endoftext|>"
+EOT_TEXT = EOT
 DTYPE = np.uint16
 
 
@@ -111,6 +116,15 @@ def write_bin(split_name):
     arr = np.fromiter(iter_token_ids(split_name), dtype=DTYPE)
     arr.tofile(os.path.join(DATA_DIR, f"{split_name}.bin"))
     print(split_name, arr.size, "tokens")
+    return int(arr.size)
+
+
+def sha256_file(path, chunk_size=8 * 1024 * 1024):
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(chunk_size), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
 
 
 if __name__ == '__main__':
@@ -121,14 +135,54 @@ if __name__ == '__main__':
     if tokenizer.get_vocab_size() > np.iinfo(DTYPE).max:
         raise ValueError("vocab size does not fit in uint16")
 
+    token_counts = {}
     for split_name in ("train", "val"):
-        write_bin(split_name)
+        for source in SOURCES:
+            path = os.path.join(DATA_DIR, "clean", split_name, f"{source}.txt")
+            if not os.path.isfile(path) or os.path.getsize(path) == 0:
+                raise FileNotFoundError(f"missing or empty clean input: {path}")
+        token_counts[split_name] = write_bin(split_name)
 
     meta = {
         "vocab_size": tokenizer.get_vocab_size(),
         "eot_id": eot,
         "tokenizer": TOKENIZER_NAME,
+        "protocol": "official-train-dev-v1",
     }
 
     with open(os.path.join(DATA_DIR, "meta.pkl"), "wb") as f:
         pickle.dump(meta, f)
+
+    manifest = {
+        "schema_version": 1,
+        "protocol": "official-train-dev-v1",
+        "tokenizer": {
+            "path": os.path.abspath(TOKENIZER_PATH),
+            "sha256": sha256_file(TOKENIZER_PATH),
+            "vocab_size": tokenizer.get_vocab_size(),
+            "eot_id": eot,
+        },
+        "clean_inputs": {
+            split_name: [
+                {
+                    "source": source,
+                    "path": os.path.abspath(os.path.join(DATA_DIR, "clean", split_name, f"{source}.txt")),
+                    "sha256": sha256_file(os.path.join(DATA_DIR, "clean", split_name, f"{source}.txt")),
+                }
+                for source in SOURCES
+            ]
+            for split_name in ("train", "val")
+        },
+        "bins": {
+            split_name: {
+                "path": os.path.abspath(os.path.join(DATA_DIR, f"{split_name}.bin")),
+                "tokens": token_counts[split_name],
+                "sha256": sha256_file(os.path.join(DATA_DIR, f"{split_name}.bin")),
+                "dtype": "uint16",
+            }
+            for split_name in ("train", "val")
+        },
+    }
+    with open(os.path.join(DATA_DIR, "data_manifest.json"), "w", encoding="utf-8") as f:
+        json.dump(manifest, f, indent=2)
+        f.write("\n")

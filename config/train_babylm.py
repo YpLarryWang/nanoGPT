@@ -2,8 +2,10 @@
 # Base config for the 2x2x2 architecture ablation; per-run the arch flags, dataset,
 # max_iters, out_dir, and wandb_run_name are set by run_babylm_ablation.sh (or --overrides).
 #
-#   10M (strict-small):  ~12.2M train tokens -> 10 epochs @ 262,144 tok/iter = 466 iters
-#   100M (strict):       set --dataset=babylm_100m --max_iters=<10*tok/262144> --warmup_iters=100
+# Legacy tail-validation defaults below reproduce historical runs only.
+# Official-dev runs must set dataset={babylm,babylm_100m}_officialdev, include
+# -offdev in the run name, and derive max_iters from that dataset's measured
+# train.bin/audit_report.json rather than copying 466 or 4740.
 
 out_dir = 'out-babylm'
 eval_interval = 50
@@ -17,7 +19,7 @@ wandb_log = True                 # override with --wandb_log=False for smoke tes
 wandb_project = 'babylm'
 wandb_run_name = 'babylm-run'    # overridden per variant
 
-dataset = 'babylm'               # 'babylm' (10M) or 'babylm_100m'
+dataset = 'babylm'               # legacy default; offdev runners override explicitly
 gradient_accumulation_steps = 8
 batch_size = 64
 block_size = 512
@@ -41,7 +43,7 @@ attn_res_block_size = 2
 # --- optimizer flags ---
 # -- AdamW --
 learning_rate = 6e-4
-max_iters = 466                  # 10M default; 100M overrides to ~5150
+max_iters = 466                  # legacy 10M default; offdev runners must override
 lr_decay_iters = 466             # keep == max_iters (Chinchilla)
 min_lr = 6e-5
 warmup_iters = 40                # ~10% of 466 (scaled down from tinystories' 100)
