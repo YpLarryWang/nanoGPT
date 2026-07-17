@@ -64,6 +64,39 @@ Protocol consequences are hard requirements:
 - do not change the cleaning policy while changing the split protocol, so the
   protocol transition remains interpretable.
 
+P0 construction completed on Jetstream at commit
+`f55dba2daf28c48164037a2408415d58b0984b28`:
+
+| dataset | raw train words | clean train words | train BPE tokens | official-dev BPE tokens | derived 10-epoch max_iters |
+|---|---:|---:|---:|---:|---:|
+| `babylm_officialdev` | 10,000,000 | 9,031,000 | 12,342,269 | 13,239,606 | 471 |
+| `babylm_100m_officialdev` | 100,000,000 | 91,013,313 | 125,741,676 | 13,118,445 | 4,797 |
+
+The max-iteration values are derived from the measured train bins at
+32 batch x 16 gradient accumulation x 512 context = 262,144 tokens/update.
+They are inputs to future schedule construction, not replacements to paste into
+legacy runners.
+
+Final fingerprints:
+
+| dataset | tokenizer SHA256 | train.bin SHA256 | val.bin SHA256 |
+|---|---|---|---|
+| 10M offdev | `8c877bb7243db5669f68a9bbbf0c46ca56fb02edd2d43520aac978aa1f35a873` | `63871a140cb32e170d848ca8f13be39801ddf6d50809bb4d997510e99a7eeb10` | `c7e638f3e7c5afbce3503e09d9ddd46565a1a43d27fb46761c8216b747f05007` |
+| 100M offdev | `f13720328807e761dc92192111d89ece0119987875f890f3665eba477b5d727c` | `8b3f3e41b28ab3cfde1fe8f1c095c662ece3332f081d1e70698a279d0e1a6853` | `d078706863afbcf3b35a6d1e7f5f571eab99c7ac52bda8fbe2c6a0fbe4ad2fa8` |
+
+The official releases themselves contain exact cleaned-line overlap between
+train and dev. The global audit reports 35,425 unique exact / 225 long-line
+overlaps at 10M and 116,003 exact / 5,360 long-line overlaps at 100M. "Long"
+means at least five whitespace words and 40 characters. This is source-data
+overlap, not pipeline leakage: downloads are independently pinned and hashed,
+and both tokenizer manifests verify exactly six `clean/train` inputs with no
+dev input. Preserve and disclose the audit rather than claiming zero overlap.
+
+Both datasets passed a two-update GPU smoke with shuffle sampling and official
+dev validation (`wandb_log=False`, logs/checkpoints under `/tmp`): final smoke
+validation loss was 9.6844 for 10M and 9.6786 for 100M. These losses only prove
+the data/training path executes; they are not experimental results.
+
 ## 2. Current decision snapshot
 
 ### 100M
