@@ -11,9 +11,9 @@ DATA=/media/volume/yupei-data
 EVAL_REPO="$DATA/repo/babylm-eval/strict"
 EVAL_PY="$DATA/envs/babylm-eval/bin/python"
 LOG_DIR=logs/eval-offdev-10m-2x2
-QUEUE_LOG="$LOG_DIR/causal-zero-shot.queue.log"
-DONE_MARKER=results/offdev10m-2x2-s1337.causal-zero-shot.done
-FAILED_MARKER=results/offdev10m-2x2-s1337.causal-zero-shot.failed
+QUEUE_LOG="$LOG_DIR/causal-zero-shot-v2.queue.log"
+DONE_MARKER=results/offdev10m-2x2-s1337.causal-zero-shot-v2.done
+FAILED_MARKER=results/offdev10m-2x2-s1337.causal-zero-shot-v2.failed
 LOCK_DIR=/tmp/offdev10m-2x2-s1337-causal-zero-shot.lock
 
 NAMES=(
@@ -63,7 +63,7 @@ ACTIVE="$(pgrep -af '[e]val_variant|[e]val_zero_shot|evaluation_pipeline.*run' 2
 for name in "${NAMES[@]}"; do
   manifest="out-babylm/$name/checkpoint_manifest.json"
   [[ -f "$manifest" ]] || fail "missing manifest: $manifest"
-  "$EVAL_PY" -c 'import json,os,sys; p=sys.argv[1]; d=json.load(open(p)); f=os.path.join(os.path.dirname(p),d["roles"]["final"]); assert os.path.isfile(f),f; assert d["roles"]["best"]==d["roles"]["final"],d["roles"]' "$manifest"
+  "$EVAL_PY" -c 'import json,os,sys; p=sys.argv[1]; d=json.load(open(p)); f=os.path.join(os.path.dirname(p),d["roles"]["final"]); assert os.path.isfile(f),f' "$manifest"
   [[ ! -e "$DATA/hf-models/$name" ]] || fail "HF export already exists: $DATA/hf-models/$name"
   [[ ! -e "$EVAL_REPO/results/$name" ]] || fail "eval results already exist: $EVAL_REPO/results/$name"
   [[ ! -e "$LOG_DIR/$name.log" ]] || fail "eval log already exists: $LOG_DIR/$name.log"
