@@ -54,6 +54,13 @@ bash eval/eval_variant.sh bl100m-rms-swiglu-rope --fast
 # whole ablation
 bash eval/eval_all_variants.sh --fast
 ```
+
+Official-dev run names containing `-offdev` resolve to the independently
+retrained tokenizers under `data/babylm{,_100m}_officialdev`; they must never be
+converted with the legacy tail-split tokenizer. Pass `--no-sync` to retain raw
+evaluation outputs without changing scoreboards, for example when evaluating a
+new matrix serially before reviewing and importing its rows.
+
 Results land under `babylm-eval/strict/results/<variant>/`.
 
 ## Tasks (2026 strict track)

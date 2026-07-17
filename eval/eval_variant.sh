@@ -8,6 +8,7 @@
 #   bash eval/eval_variant.sh bl100m-ln-mlp-learned --glue   # + GLUE fine-tuning (slow!)
 #   bash eval/eval_variant.sh <variant> --role best           # explicit best checkpoint
 #   bash eval/eval_variant.sh <variant> --ckpt /path/to/x.pt  # explicit checkpoint path
+#   bash eval/eval_variant.sh <variant> --no-sync             # evaluate only; import later
 #
 # New runs resolve final/best through checkpoint_manifest.json. Legacy runs fall
 # back to out-babylm/<variant>/ckpt.pt.
@@ -15,12 +16,13 @@
 #   DATA NANO_REPO EVAL_REPO PY HF_ROOT
 set -euo pipefail
 
-VARIANT="${1:?usage: eval_variant.sh <variant> [--fast] [--glue] [--role final|best] [--ckpt path]}"; shift || true
-FAST=0; GLUE=0; ROLE=final; CKPT_ARG=""
+VARIANT="${1:?usage: eval_variant.sh <variant> [--fast] [--glue] [--no-sync] [--role final|best] [--ckpt path]}"; shift || true
+FAST=0; GLUE=0; NO_SYNC=0; ROLE=final; CKPT_ARG=""
 while [ "$#" -gt 0 ]; do
   case "$1" in
     --fast) FAST=1 ;;
     --glue) GLUE=1 ;;
+    --no-sync) NO_SYNC=1 ;;
     --role) ROLE="${2:?--role needs final or best}"; shift ;;
     --ckpt) CKPT_ARG="${2:?--ckpt needs a path}"; ROLE=explicit; shift ;;
     *) echo "unknown arg: $1" >&2; exit 1 ;;
@@ -49,13 +51,16 @@ else
 fi
 [ -f "$CKPT" ] || { echo "no checkpoint: $CKPT" >&2; exit 1; }
 
-# 100M models use the 100M tokenizer; everything else uses the 10M tokenizer.
-# Match *bl100m-* (substring) so optimizer-prefixed names like muon-bl100m-* are
-# caught too; "bl100m" is not a substring of the 10M "bl10m", so 10M names are safe.
+# Protocol-specific tokenizers are not interchangeable: the official-dev BPEs
+# were retrained on full official train, while legacy BPEs saw the tail-carved
+# training split. Match offdev before the legacy track fallback.
 case "$VARIANT" in
-  *bl100m-*) TOK="$NANO_REPO/data/babylm_100m/tokenizer/bpe-16000.json" ;;
-  *)         TOK="$NANO_REPO/data/babylm/tokenizer/bpe-16000.json" ;;
+  *bl100m-*offdev*) TOK="$NANO_REPO/data/babylm_100m_officialdev/tokenizer/bpe-16000.json" ;;
+  *bl10m-*offdev*)  TOK="$NANO_REPO/data/babylm_officialdev/tokenizer/bpe-16000.json" ;;
+  *bl100m-*)        TOK="$NANO_REPO/data/babylm_100m/tokenizer/bpe-16000.json" ;;
+  *)                TOK="$NANO_REPO/data/babylm/tokenizer/bpe-16000.json" ;;
 esac
+[ -f "$TOK" ] || { echo "no tokenizer: $TOK" >&2; exit 1; }
 RESULT_NAME="$VARIANT"
 if [ "$ROLE" != final ]; then RESULT_NAME="$VARIANT-$ROLE"; fi
 HFDIR="$HF_ROOT/$RESULT_NAME"
@@ -92,6 +97,10 @@ if [ "$GLUE" = 1 ]; then
 fi
 
 echo ">> done: $VARIANT  (results under $EVAL_REPO/results/$VARIANT)"
+if [ "$NO_SYNC" = 1 ]; then
+  echo ">> skip scoreboard sync (--no-sync)"
+  exit 0
+fi
 SYNC_ARGS=("$RESULT_NAME" --eval-repo "$EVAL_REPO" --backend causal)
 # A non-final role changes the HF/result directory name (for example
 # ``run-best``), but the scoreboard row should still describe the training run
