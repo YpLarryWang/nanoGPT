@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import sys
 import tempfile
 import unittest
@@ -13,7 +14,14 @@ import torch
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "eval"))
 
-from full_dev_loss import evaluate_model, sha256_file, token_batches  # noqa: E402
+from full_dev_loss import (  # noqa: E402
+    OFFICIAL_TEST_REPO,
+    OFFICIAL_TEST_REVISION,
+    evaluate_model,
+    sha256_file,
+    token_batches,
+    validate_test_data,
+)
 
 
 class MeanTargetModel(torch.nn.Module):
@@ -59,6 +67,46 @@ class FullDevLossTest(unittest.TestCase):
     def test_rejects_too_short_data(self):
         with self.assertRaisesRegex(ValueError, "at least two"):
             list(token_batches(np.array([1], dtype=np.uint16), 4, 2))
+
+    def test_test_manifest_must_match_checkpoint_tokenizer(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            data_dir = Path(tmp)
+            data_path = data_dir / "test.bin"
+            data_path.write_bytes(b"\x01\x00\x02\x00")
+            source_manifest_path = data_dir / "test_source_manifest.json"
+            source_manifest_path.write_text(
+                json.dumps(
+                    {
+                        "protocol": "official-test-v1",
+                        "repo": OFFICIAL_TEST_REPO,
+                        "revision": OFFICIAL_TEST_REVISION,
+                    },
+                    sort_keys=True,
+                ),
+                encoding="utf-8",
+            )
+            test_manifest = {
+                "protocol": "official-test-tokenized-v1",
+                "repo": OFFICIAL_TEST_REPO,
+                "revision": OFFICIAL_TEST_REVISION,
+                "source_manifest_sha256": sha256_file(source_manifest_path),
+                "tokenizer": {"sha256": "test-tokenizer"},
+                "bin": {"sha256": sha256_file(data_path), "tokens": 2},
+            }
+            (data_dir / "test_manifest.json").write_text(
+                json.dumps(test_manifest, sort_keys=True), encoding="utf-8"
+            )
+            checkpoint = {
+                "provenance": {
+                    "data_fingerprints": {"tokenizer_sha256": "test-tokenizer"}
+                }
+            }
+            validated = validate_test_data(checkpoint, data_dir, data_path)
+            self.assertEqual(validated["official_revision"], OFFICIAL_TEST_REVISION)
+
+            checkpoint["provenance"]["data_fingerprints"]["tokenizer_sha256"] = "wrong"
+            with self.assertRaisesRegex(ValueError, "tokenizer SHA-256 mismatch"):
+                validate_test_data(checkpoint, data_dir, data_path)
 
 
 if __name__ == "__main__":

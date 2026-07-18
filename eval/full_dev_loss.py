@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
-"""Deterministic full-official-dev next-token loss for native nanoGPT checkpoints.
+"""Deterministic full-official-dev/test next-token loss for nanoGPT checkpoints.
 
 The protocol follows the token-weighted NLL accounting used by Hugging Face's
 fixed-context perplexity example, adapted to this repository's native forward:
 ``GPT(x, y)`` expects targets that are already shifted by one token.  Windows
 therefore start at 0, block_size, 2*block_size, ... and read one extra token;
-every token in val.bin except the first is scored exactly once.
+every token in the selected binary stream except the first is scored exactly
+once.  Official test evaluation additionally verifies the pinned public test
+release and that its tokenizer is byte-identical to the checkpoint tokenizer.
 """
 
 from __future__ import annotations
@@ -30,7 +32,12 @@ sys.path.insert(0, str(REPO))
 from model import GPT, GPTConfig  # noqa: E402
 
 
-PROTOCOL = "full-dev-next-token-v1"
+PROTOCOLS = {
+    "dev": "full-dev-next-token-v1",
+    "test": "full-test-next-token-v1",
+}
+OFFICIAL_TEST_REPO = "BabyLM-community/BabyLM-Test"
+OFFICIAL_TEST_REVISION = "2c47b98e2dc3707465aed81da69dc36cdca5d13b"
 DTYPES = {
     "float32": torch.float32,
     "bfloat16": torch.bfloat16,
@@ -152,21 +159,88 @@ def resolve_dtype(requested: str, checkpoint: dict) -> tuple[str, torch.dtype | 
     return name, None if name == "float32" else DTYPES[name]
 
 
-def validate_data(checkpoint: dict, data_dir: Path, val_path: Path) -> tuple[str, str]:
+def validate_dataset_name(checkpoint: dict, data_dir: Path) -> None:
     checkpoint_dataset = checkpoint.get("config", {}).get("dataset")
     if checkpoint_dataset and data_dir.name != checkpoint_dataset:
         raise ValueError(
             f"checkpoint dataset={checkpoint_dataset!r} does not match data directory {data_dir.name!r}"
         )
+
+
+def validate_dev_data(checkpoint: dict, data_path: Path) -> dict:
     expected = checkpoint.get("provenance", {}).get("data_fingerprints", {}).get(
         "val_bin_sha256"
     )
     if not expected:
         raise ValueError("checkpoint is missing provenance.data_fingerprints.val_bin_sha256")
-    actual = sha256_file(val_path)
+    actual = sha256_file(data_path)
     if actual != expected:
         raise ValueError(f"val.bin SHA-256 mismatch: checkpoint={expected}, actual={actual}")
-    return expected, actual
+    return {"expected_sha256": expected, "actual_sha256": actual}
+
+
+def load_json(path: Path) -> dict:
+    with path.open(encoding="utf-8") as handle:
+        payload = json.load(handle)
+    if not isinstance(payload, dict):
+        raise ValueError(f"expected a JSON object: {path}")
+    return payload
+
+
+def validate_test_data(checkpoint: dict, data_dir: Path, data_path: Path) -> dict:
+    source_manifest_path = data_dir / "test_source_manifest.json"
+    test_manifest_path = data_dir / "test_manifest.json"
+    source_manifest = load_json(source_manifest_path)
+    test_manifest = load_json(test_manifest_path)
+
+    for manifest, expected_protocol, label in (
+        (source_manifest, "official-test-v1", "source"),
+        (test_manifest, "official-test-tokenized-v1", "tokenized"),
+    ):
+        if manifest.get("protocol") != expected_protocol:
+            raise ValueError(
+                f"unexpected {label} test protocol: {manifest.get('protocol')!r}"
+            )
+        if manifest.get("repo") != OFFICIAL_TEST_REPO:
+            raise ValueError(f"unexpected {label} test repository: {manifest.get('repo')!r}")
+        if manifest.get("revision") != OFFICIAL_TEST_REVISION:
+            raise ValueError(f"unexpected {label} test revision: {manifest.get('revision')!r}")
+
+    source_manifest_sha = sha256_file(source_manifest_path)
+    if test_manifest.get("source_manifest_sha256") != source_manifest_sha:
+        raise ValueError("test source manifest SHA-256 mismatch")
+
+    expected_tokenizer = checkpoint.get("provenance", {}).get("data_fingerprints", {}).get(
+        "tokenizer_sha256"
+    )
+    actual_tokenizer = test_manifest.get("tokenizer", {}).get("sha256")
+    if not expected_tokenizer:
+        raise ValueError("checkpoint is missing provenance.data_fingerprints.tokenizer_sha256")
+    if actual_tokenizer != expected_tokenizer:
+        raise ValueError(
+            f"test tokenizer SHA-256 mismatch: checkpoint={expected_tokenizer}, "
+            f"test={actual_tokenizer}"
+        )
+
+    expected = test_manifest.get("bin", {}).get("sha256")
+    if not expected:
+        raise ValueError("test manifest is missing bin.sha256")
+    manifest_tokens = test_manifest.get("bin", {}).get("tokens")
+    if not isinstance(manifest_tokens, int) or manifest_tokens < 2:
+        raise ValueError("test manifest has an invalid bin.tokens value")
+    actual = sha256_file(data_path)
+    if actual != expected:
+        raise ValueError(f"test.bin SHA-256 mismatch: manifest={expected}, actual={actual}")
+    return {
+        "expected_sha256": expected,
+        "actual_sha256": actual,
+        "source_manifest_sha256": source_manifest_sha,
+        "tokenizer_sha256_expected": expected_tokenizer,
+        "tokenizer_sha256_actual": actual_tokenizer,
+        "official_repo": OFFICIAL_TEST_REPO,
+        "official_revision": OFFICIAL_TEST_REVISION,
+        "manifest_tokens": manifest_tokens,
+    }
 
 
 def write_json_exclusive(path: Path, payload: dict) -> None:
@@ -180,6 +254,7 @@ def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", required=True, type=Path)
     parser.add_argument("--data-dir", required=True, type=Path)
+    parser.add_argument("--split", choices=sorted(PROTOCOLS), default="dev")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--batch-size", type=int, default=None,
                         help="default: checkpoint config eval_batch_size")
@@ -190,11 +265,11 @@ def main() -> None:
 
     checkpoint_path = args.checkpoint.resolve()
     data_dir = args.data_dir.resolve()
-    val_path = data_dir / "val.bin"
+    data_path = data_dir / ("val.bin" if args.split == "dev" else "test.bin")
     if not checkpoint_path.is_file():
         raise FileNotFoundError(checkpoint_path)
-    if not val_path.is_file():
-        raise FileNotFoundError(val_path)
+    if not data_path.is_file():
+        raise FileNotFoundError(data_path)
 
     device = torch.device(args.device)
     if device.type == "cuda" and not torch.cuda.is_available():
@@ -206,17 +281,31 @@ def main() -> None:
     state_dict = checkpoint.get("model")
     if not isinstance(model_args, dict) or not isinstance(state_dict, dict):
         raise ValueError("checkpoint must contain model_args and model state dictionaries")
+    if checkpoint.get("checkpoint_role") != "final":
+        raise ValueError(
+            f"expected checkpoint_role='final', got {checkpoint.get('checkpoint_role')!r}"
+        )
     block_size = int(model_args["block_size"])
     checkpoint_eval_batch = checkpoint.get("config", {}).get("eval_batch_size")
     batch_size = args.batch_size if args.batch_size is not None else checkpoint_eval_batch
     if not isinstance(batch_size, int) or batch_size <= 0:
         raise ValueError("a positive --batch-size is required when checkpoint lacks eval_batch_size")
     dtype_name, autocast_dtype = resolve_dtype(args.dtype, checkpoint)
-    expected_sha, actual_sha = validate_data(checkpoint, data_dir, val_path)
+    validate_dataset_name(checkpoint, data_dir)
+    validation = (
+        validate_dev_data(checkpoint, data_path)
+        if args.split == "dev"
+        else validate_test_data(checkpoint, data_dir, data_path)
+    )
 
-    data = np.memmap(val_path, dtype=np.uint16, mode="r")
+    data = np.memmap(data_path, dtype=np.uint16, mode="r")
+    if args.split == "test" and len(data) != validation["manifest_tokens"]:
+        raise ValueError(
+            f"test token count mismatch: manifest={validation['manifest_tokens']}, "
+            f"actual={len(data)}"
+        )
     if int(data.max()) >= int(model_args["vocab_size"]):
-        raise ValueError("val.bin contains a token outside the checkpoint vocabulary")
+        raise ValueError(f"{data_path.name} contains a token outside the checkpoint vocabulary")
     model = GPT(GPTConfig(**model_args))
     model.load_state_dict(clean_state_dict(state_dict))
     del checkpoint["model"]
@@ -226,10 +315,12 @@ def main() -> None:
     if device.type == "cuda":
         torch.backends.cuda.matmul.allow_tf32 = True
         torch.backends.cudnn.allow_tf32 = True
+        torch.cuda.reset_peak_memory_stats(device)
     print(
-        f"protocol={PROTOCOL} val_tokens={len(data)} scored_tokens={len(data) - 1} "
+        f"protocol={PROTOCOLS[args.split]} split={args.split} "
+        f"data_tokens={len(data)} scored_tokens={len(data) - 1} "
         f"block_size={block_size} batch_size={batch_size} dtype={dtype_name} "
-        f"val_sha256={actual_sha}",
+        f"data_sha256={validation['actual_sha256']}",
         flush=True,
     )
     avg_nll, scored_tokens, elapsed = evaluate_model(
@@ -243,16 +334,18 @@ def main() -> None:
     )
     result = {
         "schema_version": 1,
-        "protocol": PROTOCOL,
+        "protocol": PROTOCOLS[args.split],
+        "split": args.split,
         "run_name": checkpoint.get("config", {}).get("wandb_run_name"),
         "checkpoint": str(checkpoint_path),
         "checkpoint_role": checkpoint.get("checkpoint_role"),
         "iter_num": checkpoint.get("iter_num"),
         "dataset": checkpoint.get("config", {}).get("dataset"),
         "data_dir": str(data_dir),
-        "val_bin_sha256_expected": expected_sha,
-        "val_bin_sha256_actual": actual_sha,
-        "val_tokens": int(len(data)),
+        "data_path": str(data_path),
+        "data_bin_sha256_expected": validation["expected_sha256"],
+        "data_bin_sha256_actual": validation["actual_sha256"],
+        "data_tokens": int(len(data)),
         "scored_tokens": scored_tokens,
         "block_size": block_size,
         "batch_size": batch_size,
@@ -260,12 +353,39 @@ def main() -> None:
         "dtype": dtype_name,
         "device": str(device),
         "gpu": torch.cuda.get_device_name(device) if device.type == "cuda" else None,
+        "peak_cuda_memory_allocated_bytes": (
+            torch.cuda.max_memory_allocated(device) if device.type == "cuda" else None
+        ),
+        "peak_cuda_memory_reserved_bytes": (
+            torch.cuda.max_memory_reserved(device) if device.type == "cuda" else None
+        ),
         "torch_version": torch.__version__,
         "mean_nll": avg_nll,
         "perplexity": math.exp(avg_nll),
         "elapsed_seconds": elapsed,
         "tokens_per_second": scored_tokens / elapsed if elapsed else None,
     }
+    if args.split == "dev":
+        result.update(
+            {
+                "val_bin_sha256_expected": validation["expected_sha256"],
+                "val_bin_sha256_actual": validation["actual_sha256"],
+                "val_tokens": int(len(data)),
+            }
+        )
+    else:
+        result.update(
+            {
+                key: validation[key]
+                for key in (
+                    "source_manifest_sha256",
+                    "tokenizer_sha256_expected",
+                    "tokenizer_sha256_actual",
+                    "official_repo",
+                    "official_revision",
+                )
+            }
+        )
     print(json.dumps(result, sort_keys=True), flush=True)
     if args.output_json:
         write_json_exclusive(args.output_json.resolve(), result)

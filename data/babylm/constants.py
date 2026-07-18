@@ -18,11 +18,13 @@ EOT = "<|endoftext|>"
 RAW_FILENAME_TEMPLATES = {
     "train": "{source}.train.txt",
     "dev": "{source}.dev",
+    "test": "{source}.test",
 }
 
 CLEAN_SPLIT_NAMES = {
     "train": "train",
     "dev": "val",
+    "test": "test",
 }
 
 OFFDEV_DATASETS = {"babylm_officialdev", "babylm_100m_officialdev"}
