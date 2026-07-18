@@ -108,6 +108,10 @@ def full_checkpoint_at(out_dir: Path, iteration: int):
 
 
 def main():
+    compile_enabled = os.environ.get("NANOGPT_RESUME_TEST_COMPILE") == "1"
+    if compile_enabled and not torch.cuda.is_available():
+        raise RuntimeError("compiled resume integration requires CUDA")
+    device = "cuda" if compile_enabled else "cpu"
     with tempfile.TemporaryDirectory(prefix="nanogpt-resume-integration-") as temporary:
         root = Path(temporary)
         copy_runtime(root)
@@ -118,9 +122,9 @@ def main():
             sys.executable,
             "train.py",
             "--dataset=resume_integration",
-            "--device=cpu",
+            f"--device={device}",
             "--dtype=float32",
-            "--compile=False",
+            f"--compile={compile_enabled}",
             "--n_layer=2",
             "--n_head=4",
             "--n_embd=32",
@@ -171,7 +175,10 @@ def main():
         assert uninterrupted["final_train_loss"] == recovered["final_train_loss"]
         assert uninterrupted["final_val_loss"] == recovered["final_val_loss"]
         assert len(uninterrupted_manifest["checkpoints"]) == len(recovered_manifest["checkpoints"])
-        print("[ok] interrupted resume is bitwise-identical to uninterrupted training")
+        print(
+            "[ok] interrupted resume is bitwise-identical to uninterrupted training "
+            f"(device={device}, compile={compile_enabled})"
+        )
 
 
 if __name__ == "__main__":
