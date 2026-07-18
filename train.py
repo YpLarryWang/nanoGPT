@@ -52,6 +52,7 @@ eval_only = False # if True, script exits right after the first eval
 always_save_checkpoint = True # if True, always save a checkpoint after each eval
 init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 resume_checkpoint = '' # explicit checkpoint path; legacy resume falls back to out_dir/ckpt.pt
+resume_strict = True # fail closed if a full checkpoint or trajectory-affecting config is incomplete/mismatched
 save_iters = []    # exact iters to archive a separate, weights-only checkpoint
 checkpoint_schedule = '' # dual word/token schedule JSON; its iters are unioned with save_iters
 experiment_log_path = 'results/experiments.jsonl'
@@ -59,6 +60,8 @@ experiment_log_path = 'results/experiments.jsonl'
 wandb_log = False # disabled by default
 wandb_project = 'owt'
 wandb_run_name = 'gpt2' # 'run' + str(time.time())
+wandb_run_id = '' # required by strict W&B resume; display names are not unique identifiers
+wandb_resume = '' # '', 'allow', 'must', 'never', or 'auto'
 # data
 dataset = 'openwebtext'
 gradient_accumulation_steps = 5 * 8 # used to simulate larger batch sizes
@@ -277,6 +280,8 @@ best_iter_num = None
 resume_rng_state = None
 resume_train_draw = None
 resume_batch = None
+resume_start_iter = None
+resume_checkpoint_role = None
 train_draw = 0     # next scheduled train batch on this rank (sampler='shuffle'; derived from iter_num)
 schedule = None    # ShuffleSchedule, built just before the training loop when sampler='shuffle'
 
@@ -338,7 +343,77 @@ elif init_from == 'resume':
     print(f"Resuming training from {out_dir}")
     # resume training from a checkpoint.
     ckpt_path = resume_checkpoint or os.path.join(out_dir, 'ckpt.pt')
-    checkpoint = torch.load(ckpt_path, map_location=device)
+    # Full training checkpoints are trusted, self-generated artifacts and contain
+    # optimizer/RNG objects that PyTorch's weights_only=True loader intentionally rejects.
+    checkpoint = torch.load(ckpt_path, map_location=device, weights_only=False)
+    required_resume_keys = {
+        'model', 'model_args', 'optimizer', 'iter_num', 'best_val_loss',
+        'best_iter_num', 'rng_state', 'train_draw', 'prefetched_batch',
+        'config', 'provenance',
+    }
+    missing_resume_keys = sorted(required_resume_keys - checkpoint.keys())
+    if missing_resume_keys:
+        raise ValueError(
+            f"resume checkpoint is not a complete training checkpoint; missing {missing_resume_keys}. "
+            "A weights-only milestone cannot resume training."
+        )
+
+    checkpoint_config = checkpoint['config']
+    resume_exact_keys = (
+        'dataset', 'batch_size', 'gradient_accumulation_steps', 'block_size',
+        'sampler', 'sampler_seed', 'seed', 'eval_seed',
+        'n_layer', 'n_head', 'n_embd', 'dropout', 'bias',
+        'use_rmsnorm', 'use_swiglu', 'swiglu_mult', 'use_rope',
+        'use_attn_gate', 'use_attn_res', 'attn_res_block_size',
+        'learning_rate', 'max_iters', 'weight_decay', 'beta1', 'beta2',
+        'grad_clip', 'decay_lr', 'warmup_iters', 'lr_decay_iters', 'min_lr',
+        'use_muon', 'use_hybrid', 'causal_microsteps',
+        'dtype', 'compile', 'eval_interval', 'eval_iters', 'eval_batch_size',
+        'eval_only', 'always_save_checkpoint', 'checkpoint_schedule', 'save_iters',
+        'checkpoint_schedule_metadata',
+    )
+    resume_mismatches = []
+    if resume_strict:
+        for key in resume_exact_keys:
+            if key not in checkpoint_config and key not in config:
+                continue
+            if key not in checkpoint_config:
+                resume_mismatches.append(f"{key}: missing from checkpoint config")
+            elif checkpoint_config[key] != config.get(key):
+                resume_mismatches.append(
+                    f"{key}: checkpoint={checkpoint_config[key]!r}, run={config.get(key)!r}"
+                )
+        checkpoint_provenance = checkpoint['provenance']
+        for key, current in (
+            ('world_size', ddp_world_size),
+            ('global_grad_accum', global_gradient_accumulation_steps),
+        ):
+            if checkpoint_provenance.get(key) != current:
+                resume_mismatches.append(
+                    f"provenance.{key}: checkpoint={checkpoint_provenance.get(key)!r}, run={current!r}"
+                )
+        if resume_mismatches:
+            raise ValueError(
+                "strict resume configuration mismatch:\n  - " + "\n  - ".join(resume_mismatches)
+            )
+
+    if not isinstance(checkpoint['train_draw'], int) or checkpoint['train_draw'] < 0:
+        raise ValueError(f"invalid resume train_draw={checkpoint['train_draw']!r}")
+    prefetched = checkpoint['prefetched_batch']
+    if not isinstance(prefetched, (tuple, list)) or len(prefetched) != 2:
+        raise ValueError("resume prefetched_batch must contain exactly (X, Y)")
+    expected_batch_shape = (batch_size, block_size)
+    if any(tuple(tensor.shape) != expected_batch_shape for tensor in prefetched):
+        raise ValueError(
+            f"resume prefetched_batch shapes {[tuple(t.shape) for t in prefetched]} "
+            f"do not match {expected_batch_shape}"
+        )
+    rng_state = checkpoint['rng_state']
+    required_rng_keys = {'python', 'numpy', 'torch_cpu', 'torch_cuda', 'hybrid_train'}
+    if not isinstance(rng_state, dict) or required_rng_keys - rng_state.keys():
+        raise ValueError(
+            f"resume RNG state is incomplete; missing {sorted(required_rng_keys - set(rng_state or {}))}"
+        )
     checkpoint_model_args = checkpoint['model_args']
 
     if use_hybrid:
@@ -371,6 +446,10 @@ elif init_from == 'resume':
             state_dict[k[len(unwanted_prefix):]] = state_dict.pop(k)
     model.load_state_dict(state_dict)
     iter_num = checkpoint['iter_num']
+    if not isinstance(iter_num, int) or not 0 <= iter_num <= max_iters:
+        raise ValueError(f"resume iter_num={iter_num!r} is outside [0, {max_iters}]")
+    resume_start_iter = iter_num
+    resume_checkpoint_role = checkpoint.get('checkpoint_role')
     best_val_loss = checkpoint['best_val_loss']
     best_iter_num = checkpoint.get('best_iter_num', iter_num)
     resume_rng_state = checkpoint.get('rng_state')
@@ -491,7 +570,21 @@ def get_lr(it):
 # logging
 if wandb_log and master_process:
     import wandb
-    wandb.init(project=wandb_project, name=wandb_run_name, config=config)
+    if init_from == 'resume' and resume_strict:
+        if not wandb_run_id:
+            raise ValueError("strict W&B resume requires --wandb_run_id=<original run id>")
+        if wandb_resume != 'must':
+            raise ValueError("strict W&B resume requires --wandb_resume=must")
+    wandb_kwargs = {
+        'project': wandb_project,
+        'name': wandb_run_name,
+        'config': config,
+    }
+    if wandb_run_id:
+        wandb_kwargs['id'] = wandb_run_id
+    if wandb_resume:
+        wandb_kwargs['resume'] = wandb_resume
+    wandb.init(**wandb_kwargs)
     wandb.define_metric("tokens")
     wandb.define_metric("*", step_metric="tokens")   # plot all metrics vs tokens
 
@@ -679,6 +772,37 @@ def save_checkpoint(path: str, role: str, weights_only: bool = False, extra: dic
         ckpt['prefetched_batch'] = (X.detach().cpu(), Y.detach().cpu())
     if extra:
         ckpt.update(extra)
+    if wandb_log and master_process:
+        ckpt['wandb_id'] = wandb.run.id
+
+    # A resumed trajectory may reach a milestone written after its last full
+    # checkpoint. Preserve that artifact and prove the replay is bitwise-identical;
+    # never silently overwrite evidence from the pre-interruption trajectory.
+    if init_from == 'resume' and role == 'milestone' and os.path.exists(path):
+        existing = torch.load(path, map_location='cpu', weights_only=False)
+        existing_model = existing.get('model')
+        current_model = ckpt['model']
+        if (
+            existing.get('iter_num') != iter_num
+            or existing.get('checkpoint_role') != 'milestone'
+            or not isinstance(existing_model, dict)
+            or existing_model.keys() != current_model.keys()
+        ):
+            raise RuntimeError(f"existing resume milestone metadata mismatch: {path}")
+        mismatched_tensors = []
+        for key, current_tensor in current_model.items():
+            if not torch.equal(existing_model[key].cpu(), current_tensor.detach().cpu()):
+                mismatched_tensors.append(key)
+                if len(mismatched_tensors) >= 5:
+                    break
+        if mismatched_tensors:
+            raise RuntimeError(
+                f"resume replay diverged at existing milestone {path}; "
+                f"first mismatched tensors: {mismatched_tensors}"
+            )
+        print(f"verified existing milestone bitwise-identical; preserving -> {path}")
+        record_checkpoint(path, role, weights_only, checkpoint_exposure, checkpoint_labels)
+        return
     print(f"saving checkpoint -> {path}")
     tmp_path = path + '.tmp'
     torch.save(ckpt, tmp_path)
@@ -723,7 +847,21 @@ while True:
             final_metrics = losses
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
-        if wandb_log:
+        resume_boundary_eval = init_from == 'resume' and iter_num == resume_start_iter
+        if (
+            resume_boundary_eval
+            and resume_checkpoint_role == 'best'
+            and best_iter_num == iter_num
+            and float(losses['val']) != float(best_val_loss)
+        ):
+            raise RuntimeError(
+                f"resume boundary validation changed: checkpoint={float(best_val_loss):.9g}, "
+                f"recomputed={float(losses['val']):.9g}"
+            )
+
+        # The crashed W&B run already contains the checkpoint-boundary evaluation.
+        # Recompute it as a guard, but do not append a duplicate history point.
+        if wandb_log and not resume_boundary_eval:
             wandb_metrics = {
                 "iter": iter_num,
                 "tokens": iter_num * tokens_per_iter,   # cumulative tokens seen
