@@ -1,8 +1,8 @@
 #!/usr/bin/env bash
 # Run the official BabyLM GLUE fine-tuning recipe, including F1 checkpoint
 # selection for MRPC/QQP. The final summary nevertheless uses the seven task
-# accuracies only. Official effective batches are preserved; 32-example tasks
-# use microbatch 16 + gradient accumulation 2 on the 20GB MIG.
+# accuracies only. Official effective batches are preserved while
+# GLUE_MICROBATCH controls memory use on the 20GB MIG.
 
 set -euo pipefail
 
@@ -28,6 +28,7 @@ MAX_EPOCHS=10
 WSC_EPOCHS=30
 SEED=42
 SEQUENCE_LENGTH=512
+GLUE_MICROBATCH="${GLUE_MICROBATCH:-16}"
 
 fail() {
   echo "FATAL: $*" >&2
@@ -47,10 +48,8 @@ run_task() {
   local task="$1" labels="$2" effective_batch="$3" epochs="$4" selection_metric="$5"
   shift 5
   local metrics=("$@")
-  local micro_batch=16 grad_accum=1
-  if (( effective_batch == 32 )); then
-    grad_accum=2
-  fi
+  local micro_batch="$GLUE_MICROBATCH"
+  local grad_accum=$((effective_batch / micro_batch))
 
   echo "task_start=$(date --iso-8601=seconds) task=$task lr=$LR effective_batch=$effective_batch microbatch=$micro_batch grad_accum=$grad_accum epochs=$epochs selection_metric=$selection_metric reported_metrics=${metrics[*]}"
   PYTHONUNBUFFERED=1 "$EVAL_PY" -m evaluation_pipeline.finetune.run \
@@ -84,6 +83,9 @@ run_task() {
 [[ -x "$EVAL_PY" ]] || fail "missing eval Python: $EVAL_PY"
 [[ -d "$EVAL_REPO" ]] || fail "missing eval repo: $EVAL_REPO"
 [[ -f "$HF_DIR/config.json" ]] || fail "missing converted model: $HF_DIR"
+[[ "$GLUE_MICROBATCH" =~ ^[1-9][0-9]*$ ]] || fail "GLUE_MICROBATCH must be a positive integer"
+(( 16 % GLUE_MICROBATCH == 0 && 32 % GLUE_MICROBATCH == 0 )) \
+  || fail "GLUE_MICROBATCH must divide official effective batches 16 and 32"
 [[ ! -e "$QUEUE_LOG" ]] || fail "queue log already exists: $QUEUE_LOG"
 [[ ! -e "$DONE_MARKER" ]] || fail "queue already completed: $DONE_MARKER"
 [[ ! -e "$FAILED_MARKER" ]] || fail "previous queue failure needs review: $FAILED_MARKER"
@@ -106,6 +108,7 @@ echo "variant=$VARIANT"
 echo "git_sha=$(git rev-parse HEAD)"
 echo "eval_repo=$EVAL_REPO"
 echo "protocol=official-default-ft-metrics-and-selection;final-summary=seven-task-accuracy-mean"
+echo "microbatch=$GLUE_MICROBATCH;effective-batches=16,32"
 
 export PATH="$(dirname "$EVAL_PY"):$PATH"
 cd "$EVAL_REPO"
