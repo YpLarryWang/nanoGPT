@@ -282,6 +282,7 @@ resume_train_draw = None
 resume_batch = None
 resume_start_iter = None
 resume_checkpoint_role = None
+resume_train_prewarm_pending = False
 train_draw = 0     # next scheduled train batch on this rank (sampler='shuffle'; derived from iter_num)
 schedule = None    # ShuffleSchedule, built just before the training loop when sampler='shuffle'
 
@@ -508,45 +509,31 @@ if compile:
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 
-# torch.compile is lazy: its first eval/train forwards and first backward can
-# initialize compiled RNG machinery. If that happens after checkpoint RNG is
-# restored, dropout resumes from a shifted Philox state. Materialize the exact
-# formal eval and train graphs first, discard the warmup gradients, and only then
-# restore checkpoint RNG below. This changes no parameter or optimizer state.
+# torch.compile is lazy. Match scratch ordering exactly: materialize only the
+# eval graph here, restore RNG, run the real checkpoint-boundary eval, and defer
+# the train/backward graph prewarm until immediately before the first update.
+# Compiling the train graph before eval can slightly change compiled eval numerics.
 if init_from == 'resume' and compile:
-    print("prewarming compiled eval/train graphs before restoring checkpoint RNG...")
-    warm_eval_generator = torch.Generator().manual_seed(eval_seed + 1)
+    print("prewarming compiled eval graph before restoring checkpoint RNG...")
+    warm_eval_generator = torch.Generator().manual_seed(eval_seed)
     warm_eval_X, warm_eval_Y = get_batch(
-        'val',
+        'train',
         batch_size_override=eval_batch_size,
         generator=warm_eval_generator,
     )
-    warm_train_X, warm_train_Y = (tensor.to(device) for tensor in resume_batch)
     model.eval()
     with torch.no_grad(), ctx:
         model(warm_eval_X, warm_eval_Y)
     model.train()
-    with ctx:
-        if use_hybrid:
-            _, warm_loss = model(
-                warm_train_X,
-                warm_train_Y,
-                is_causal=causal_microsteps > 0,
-            )
-        else:
-            _, warm_loss = model(warm_train_X, warm_train_Y)
-        warm_loss = warm_loss / gradient_accumulation_steps
-    scaler.scale(warm_loss).backward()
-    for opt in optimizers:
-        opt.zero_grad(set_to_none=True)
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-    del warm_eval_X, warm_eval_Y, warm_train_X, warm_train_Y, warm_loss
-    print("compiled resume prewarm complete")
+    del warm_eval_X, warm_eval_Y
+    resume_train_prewarm_pending = True
+    print("compiled eval prewarm complete")
 
 # Restore stochastic state only after model/optimizer construction has consumed its
 # initialization randomness, and before the first training batch is fetched.
-if resume_rng_state is not None:
+def restore_resume_stochastic_state():
     random.setstate(resume_rng_state['python'])
     np.random.set_state(resume_rng_state['numpy'])
     torch.set_rng_state(resume_rng_state['torch_cpu'].cpu())
@@ -554,6 +541,10 @@ if resume_rng_state is not None:
         torch.cuda.set_rng_state_all([state.cpu() for state in resume_rng_state['torch_cuda']])
     if hybrid_train_generator is not None and resume_rng_state.get('hybrid_train') is not None:
         hybrid_train_generator.set_state(resume_rng_state['hybrid_train'].cpu())
+
+
+if resume_rng_state is not None:
+    restore_resume_stochastic_state()
     print(f"restored RNG state from {ckpt_path}")
 
 # helps estimate an arbitrarily accurate loss over either split using many batches
@@ -958,6 +949,27 @@ while True:
             )
             finalize_best_filename()
         break
+
+    # Scratch compilation first sees eval at step 0 and train/backward only when
+    # entering update 1. Recreate that ordering at a resume boundary, then rewind
+    # every stochastic source so the real first update consumes checkpoint RNG.
+    if resume_train_prewarm_pending:
+        print("prewarming compiled train/backward graph before first resumed update...")
+        with ctx:
+            if use_hybrid:
+                _, warm_loss = model(X, Y, is_causal=causal_microsteps > 0)
+            else:
+                _, warm_loss = model(X, Y)
+            warm_loss = warm_loss / gradient_accumulation_steps
+        scaler.scale(warm_loss).backward()
+        for opt in optimizers:
+            opt.zero_grad(set_to_none=True)
+        if torch.cuda.is_available():
+            torch.cuda.synchronize()
+        del warm_loss
+        restore_resume_stochastic_state()
+        resume_train_prewarm_pending = False
+        print("compiled train prewarm complete; checkpoint RNG restored again")
 
     # forward backward update, with optional gradient accumulation to simulate larger batch size
     # and using the GradScaler if data type is float16
