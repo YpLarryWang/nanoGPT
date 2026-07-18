@@ -9,31 +9,49 @@ but maps each manifest milestone to a separately converted local HF directory.
 from __future__ import annotations
 
 import argparse
+from collections import Counter
 import json
 import os
 import subprocess
 import sys
 from pathlib import Path
 
-try:
-    from .push_checkpoint_series import selected_milestones
-except ImportError:
-    from push_checkpoint_series import selected_milestones
-
 
 def local_step_plan(run_dir: Path, manifest: dict, series: str) -> list[dict]:
+    milestones = []
+    for checkpoint in manifest.get("checkpoints", []):
+        if checkpoint.get("role") != "milestone":
+            continue
+        for label in checkpoint.get("labels", []):
+            if label.get("series") == series:
+                milestones.append((checkpoint, label))
+    milestones.sort(key=lambda pair: pair[0]["iter_num"])
+
+    # A rounded official revision can legitimately name two distinct local
+    # points, e.g. exact 90M words and a 90.34M-word final checkpoint both use
+    # ``chck_90M``. Hub uploads must still reject that branch collision, but a
+    # local AoA curve should retain both distinct x coordinates. Disambiguate
+    # only the on-disk conversion cache key.
+    revision_counts = Counter(label["revision"] for _, label in milestones)
     plan = []
     seen_steps = set()
-    for checkpoint, label in selected_milestones(manifest, series):
+    for checkpoint, label in milestones:
         step = int(label["target"])
         if step in seen_steps:
             raise ValueError(f"duplicate {series} target count: {step}")
         seen_steps.add(step)
         source = run_dir / checkpoint["path"]
+        revision = label["revision"]
+        cache_revision = revision
+        if revision_counts[revision] > 1:
+            cache_revision = (
+                f"{revision}-t{step}-i{int(checkpoint['iter_num']):06d}"
+            )
         plan.append(
             {
                 "step": step,
-                "revision": label["revision"],
+                "revision": revision,
+                "cache_revision": cache_revision,
                 "source": source,
                 "iter_num": int(checkpoint["iter_num"]),
                 "actual": int(label.get("actual", step)),
@@ -67,7 +85,7 @@ def ensure_converted(
     if not source.is_file():
         raise FileNotFoundError(f"missing checkpoint: {source}")
 
-    output = cache_dir / item["revision"]
+    output = cache_dir / item["cache_revision"]
     metadata_path = output / "checkpoint_source.json"
     if metadata_path.is_file():
         metadata = json.loads(metadata_path.read_text(encoding="utf-8"))
@@ -150,7 +168,9 @@ def main() -> None:
         existing_results = json.loads(resume_file.read_text(encoding="utf-8"))
     plan = unfinished_steps(full_plan, existing_results)
 
-    local_paths = {item["step"]: cache_dir / item["revision"] for item in full_plan}
+    local_paths = {
+        item["step"]: cache_dir / item["cache_revision"] for item in full_plan
+    }
     for item in plan:
         local_paths[item["step"]] = ensure_converted(
             item,
