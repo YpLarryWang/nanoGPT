@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
-# Run the official BabyLM GLUE fine-tuning recipe while selecting and reporting
-# accuracy for all seven tasks. The official effective batches are preserved;
-# 32-example tasks use microbatch 16 + gradient accumulation 2 on the 20GB MIG.
+# Run the official BabyLM GLUE fine-tuning recipe, including F1 checkpoint
+# selection for MRPC/QQP. The final summary nevertheless uses the seven task
+# accuracies only. Official effective batches are preserved; 32-example tasks
+# use microbatch 16 + gradient accumulation 2 on the 20GB MIG.
 
 set -euo pipefail
 
@@ -43,13 +44,15 @@ cleanup() {
 }
 
 run_task() {
-  local task="$1" labels="$2" effective_batch="$3" epochs="$4"
+  local task="$1" labels="$2" effective_batch="$3" epochs="$4" selection_metric="$5"
+  shift 5
+  local metrics=("$@")
   local micro_batch=16 grad_accum=1
   if (( effective_batch == 32 )); then
     grad_accum=2
   fi
 
-  echo "task_start=$(date --iso-8601=seconds) task=$task lr=$LR effective_batch=$effective_batch microbatch=$micro_batch grad_accum=$grad_accum epochs=$epochs metric=accuracy"
+  echo "task_start=$(date --iso-8601=seconds) task=$task lr=$LR effective_batch=$effective_batch microbatch=$micro_batch grad_accum=$grad_accum epochs=$epochs selection_metric=$selection_metric reported_metrics=${metrics[*]}"
   PYTHONUNBUFFERED=1 "$EVAL_PY" -m evaluation_pipeline.finetune.run \
     --model_name_or_path "$HF_DIR" \
     --train_data "evaluation_data/full_eval/glue_filtered/$task.train.jsonl" \
@@ -64,8 +67,8 @@ run_task() {
     --sequence_length "$SEQUENCE_LENGTH" \
     --results_dir results \
     --save --save_dir models \
-    --metrics accuracy \
-    --metric_for_valid accuracy \
+    --metrics "${metrics[@]}" \
+    --metric_for_valid "$selection_metric" \
     --seed "$SEED" \
     --verbose \
     --padding_side left \
@@ -102,7 +105,7 @@ echo "queue=offdev-glue-all-accuracy"
 echo "variant=$VARIANT"
 echo "git_sha=$(git rev-parse HEAD)"
 echo "eval_repo=$EVAL_REPO"
-echo "protocol=official-default-lr-epochs-effective-batch;all-tasks-select-and-report-accuracy"
+echo "protocol=official-default-ft-metrics-and-selection;final-summary=seven-task-accuracy-mean"
 
 export PATH="$(dirname "$EVAL_PY"):$PATH"
 cd "$EVAL_REPO"
@@ -113,13 +116,13 @@ if [[ -f ../.env ]]; then
   set +a
 fi
 
-run_task boolq 2 16 "$MAX_EPOCHS"
-run_task multirc 2 16 "$MAX_EPOCHS"
-run_task rte 2 32 "$MAX_EPOCHS"
-run_task wsc 2 32 "$WSC_EPOCHS"
-run_task mrpc 2 32 "$MAX_EPOCHS"
-run_task qqp 2 32 "$MAX_EPOCHS"
-run_task mnli 3 32 "$MAX_EPOCHS"
+run_task boolq 2 16 "$MAX_EPOCHS" accuracy accuracy f1 mcc
+run_task multirc 2 16 "$MAX_EPOCHS" accuracy accuracy f1 mcc
+run_task rte 2 32 "$MAX_EPOCHS" accuracy accuracy f1 mcc
+run_task wsc 2 32 "$WSC_EPOCHS" accuracy accuracy f1 mcc
+run_task mrpc 2 32 "$MAX_EPOCHS" f1 accuracy f1 mcc
+run_task qqp 2 32 "$MAX_EPOCHS" f1 accuracy f1 mcc
+run_task mnli 3 32 "$MAX_EPOCHS" accuracy accuracy
 
 SUMMARY="results/$VARIANT/main/finetune/accuracy_summary.json"
 "$EVAL_PY" "$REPO_ROOT/eval/summarize_glue_accuracy.py" "$VARIANT" \
