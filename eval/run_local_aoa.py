@@ -11,6 +11,7 @@ from __future__ import annotations
 import argparse
 from collections import Counter
 import json
+import math
 import os
 import subprocess
 import sys
@@ -61,15 +62,82 @@ def local_step_plan(run_dir: Path, manifest: dict, series: str) -> list[dict]:
     return plan
 
 
-def unfinished_steps(plan: list[dict], existing_results: dict | None) -> list[dict]:
-    if not existing_results:
-        return plan
-    completed = {
-        int(result["step"])
-        for result in existing_results.get("results", [])
-        if "step" in result
-    }
-    return [item for item in plan if item["step"] not in completed]
+def _finite_surprisal(result: dict) -> bool:
+    value = result.get("surprisal")
+    return (
+        isinstance(value, (int, float))
+        and not isinstance(value, bool)
+        and math.isfinite(float(value))
+    )
+
+
+def split_complete_resume_results(
+    plan: list[dict], existing_results: dict | None, expected_per_step: int
+) -> tuple[list[dict], set[int], dict[int, dict[str, int]]]:
+    """Keep only complete, finite checkpoint results from a resume file."""
+    if expected_per_step <= 0:
+        raise ValueError("expected_per_step must be positive")
+
+    plan_steps = {int(item["step"]) for item in plan}
+    grouped: dict[int, list[dict]] = {step: [] for step in plan_steps}
+    if existing_results:
+        for result in existing_results.get("results", []):
+            if "step" not in result:
+                continue
+            step = int(result["step"])
+            if step in grouped:
+                grouped[step].append(result)
+
+    kept = []
+    completed = set()
+    rejected = {}
+    for item in plan:
+        step = int(item["step"])
+        rows = grouped[step]
+        finite = sum(_finite_surprisal(row) for row in rows)
+        identities = {
+            (row.get("target_word"), row.get("context_id"), row.get("context"))
+            for row in rows
+        }
+        if (
+            len(rows) == expected_per_step
+            and finite == expected_per_step
+            and len(identities) == expected_per_step
+        ):
+            kept.extend(rows)
+            completed.add(step)
+        elif rows:
+            rejected[step] = {
+                "rows": len(rows),
+                "finite": finite,
+                "unique": len(identities),
+                "expected": expected_per_step,
+            }
+    return kept, completed, rejected
+
+
+def unfinished_steps(plan: list[dict], completed_steps: set[int]) -> list[dict]:
+    return [item for item in plan if int(item["step"]) not in completed_steps]
+
+
+def validate_complete_results(
+    plan: list[dict], results: dict, expected_per_step: int
+) -> None:
+    kept, completed, rejected = split_complete_resume_results(
+        plan, results, expected_per_step
+    )
+    expected_steps = {int(item["step"]) for item in plan}
+    if rejected or completed != expected_steps:
+        missing = sorted(expected_steps - completed)
+        raise RuntimeError(
+            "incomplete AoA results: "
+            f"missing_steps={missing} rejected_steps={rejected}"
+        )
+    expected_total = expected_per_step * len(plan)
+    if len(kept) != expected_total:
+        raise RuntimeError(
+            f"AoA result count mismatch: {len(kept)} != {expected_total}"
+        )
 
 
 def ensure_converted(
@@ -160,30 +228,14 @@ def main() -> None:
     if not full_plan:
         raise SystemExit(f"manifest has no {args.series!r} checkpoints")
 
-    result_dir = output_dir / run_dir.name
-    result_dir.mkdir(parents=True, exist_ok=True)
-    resume_file = result_dir / "resume" / "surprisal.json" if args.resume else None
-    existing_results = None
-    if resume_file and resume_file.is_file():
-        existing_results = json.loads(resume_file.read_text(encoding="utf-8"))
-    plan = unfinished_steps(full_plan, existing_results)
-
     local_paths = {
         item["step"]: cache_dir / item["cache_revision"] for item in full_plan
     }
-    for item in plan:
-        local_paths[item["step"]] = ensure_converted(
-            item,
-            cache_dir=cache_dir,
-            converter=converter,
-            tokenizer=tokenizer_path,
-            python=args.python,
-            dtype=args.dtype,
-        )
 
     sys.path.insert(0, str(eval_root))
     os.chdir(eval_root)
     import torch
+    from tqdm import tqdm
     from transformers import AutoModelForCausalLM, AutoProcessor, AutoTokenizer
 
     from evaluation_pipeline.AoA_word.eval_util import JsonProcessor, load_eval
@@ -207,6 +259,94 @@ def main() -> None:
             tokenizer = processor.tokenizer if hasattr(processor, "tokenizer") else processor
             return processor, tokenizer
 
+        def analyze_steps(
+            self,
+            contexts,
+            target_words,
+            use_bos_only=False,
+            resume_path=None,
+        ):
+            """Official extraction loop with CUDA/non-finite failures made fatal."""
+            existing = []
+            if resume_path and resume_path.is_file():
+                existing_data = JsonProcessor.load_json(resume_path)
+                existing = existing_data.get("results", [])
+
+            new_results = []
+            for step, word_count in zip(
+                self.config.steps, self.config.word_counts, strict=True
+            ):
+                print(f"Checkpoint: {step}")
+                model = processor = tokenizer = None
+                try:
+                    model = self.load_model_for_step(step)
+                    processor, tokenizer = self.load_tokenizer_for_step(step)
+                    for word_contexts, target_word in tqdm(
+                        zip(contexts, target_words, strict=False),
+                        total=len(target_words),
+                    ):
+                        for context_idx, context in enumerate(word_contexts):
+                            surprisal = self.compute_surprisal(
+                                model,
+                                processor,
+                                tokenizer,
+                                context,
+                                target_word,
+                                use_bos_only=use_bos_only,
+                            )
+                            if not math.isfinite(float(surprisal)):
+                                raise RuntimeError(
+                                    "non-finite surprisal: "
+                                    f"step={step} word={target_word!r} "
+                                    f"context_id={context_idx}"
+                                )
+                            new_results.append(
+                                {
+                                    "step": step,
+                                    "word_count": word_count,
+                                    "target_word": target_word,
+                                    "context_id": context_idx,
+                                    "context": "BOS_ONLY" if use_bos_only else context,
+                                    "surprisal": surprisal,
+                                }
+                            )
+
+                    if self.device == "cuda":
+                        torch.cuda.synchronize()
+                    if resume_path:
+                        combined = existing + new_results
+                        JsonProcessor.save_json(
+                            {
+                                "metadata": {
+                                    "model_name": self.model_name,
+                                    "use_bos_only": use_bos_only,
+                                    "total_steps": len(self.config.steps),
+                                    "completed_steps": len(
+                                        {int(row["step"]) for row in combined}
+                                    ),
+                                },
+                                "results": combined,
+                            },
+                            resume_path,
+                        )
+                finally:
+                    del model, processor, tokenizer
+                    if self.device == "cuda":
+                        torch.cuda.empty_cache()
+
+            combined = existing + new_results
+            return {
+                "metadata": {
+                    "model_name": self.model_name,
+                    "use_bos_only": use_bos_only,
+                    "total_steps": len(self.config.steps),
+                    "completed_steps": len(
+                        {int(row["step"]) for row in combined}
+                    ),
+                },
+                "results": combined,
+            }
+
     target_words, contexts = load_eval(word_path, args.min_context, debug=False)
     if args.max_words is not None:
         target_words = target_words[: args.max_words]
@@ -214,14 +354,48 @@ def main() -> None:
     if args.max_contexts is not None:
         contexts = [items[: args.max_contexts] for items in contexts]
 
+    expected_per_step = sum(map(len, contexts))
+    result_dir = output_dir / run_dir.name
+    result_dir.mkdir(parents=True, exist_ok=True)
+    resume_file = result_dir / "resume" / "surprisal.json" if args.resume else None
+    existing_results = None
+    if resume_file and resume_file.is_file():
+        existing_results = JsonProcessor.load_json(resume_file)
+    kept_results, completed_steps, rejected_steps = split_complete_resume_results(
+        full_plan, existing_results, expected_per_step
+    )
+    if rejected_steps:
+        print(f"discarding incomplete resume steps: {rejected_steps}")
+    if resume_file:
+        resume_file.parent.mkdir(parents=True, exist_ok=True)
+        existing_results = {
+            "metadata": {
+                "model_name": str(cache_dir),
+                "total_steps": len(full_plan),
+                "completed_steps": len(completed_steps),
+                "sanitized": True,
+            },
+            "results": kept_results,
+        }
+        JsonProcessor.save_json(existing_results, resume_file)
+    plan = unfinished_steps(full_plan, completed_steps)
+
+    for item in plan:
+        local_paths[item["step"]] = ensure_converted(
+            item,
+            cache_dir=cache_dir,
+            converter=converter,
+            tokenizer=tokenizer_path,
+            python=args.python,
+            dtype=args.dtype,
+        )
+
     device = "cuda" if torch.cuda.is_available() else "cpu"
     if plan:
         class LocalConfig:
             steps = [item["step"] for item in plan]
             word_counts = [item["step"] for item in plan]
 
-        if resume_file:
-            resume_file.parent.mkdir(parents=True, exist_ok=True)
         extractor = LocalStepSurprisalExtractor(
             config=LocalConfig(),
             model_name=str(cache_dir),
@@ -233,11 +407,12 @@ def main() -> None:
             target_words=target_words,
             resume_path=resume_file,
         )
-    elif existing_results:
+    elif existing_results and kept_results:
         results = existing_results
     else:
         raise RuntimeError("no unfinished checkpoints and no resumable results")
 
+    validate_complete_results(full_plan, results, expected_per_step)
     results["metadata"].update(
         {
             "total_steps": len(full_plan),
@@ -266,6 +441,9 @@ def main() -> None:
             local_paths[full_plan[-1]["step"]], trust_remote_code=True
         ),
     )
+    curve_fitness = float(score.get("curve_fitness", float("nan")))
+    if not math.isfinite(curve_fitness):
+        raise RuntimeError(f"non-finite AoA curve_fitness: {curve_fitness}")
     JsonProcessor.save_json({"aoa": score}, result_dir / "aoa_score.json")
     print(
         f"local AoA complete: checkpoints={len(full_plan)} words={len(target_words)} "
