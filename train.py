@@ -282,7 +282,6 @@ resume_train_draw = None
 resume_batch = None
 resume_start_iter = None
 resume_checkpoint_role = None
-resume_train_prewarm_pending = False
 train_draw = 0     # next scheduled train batch on this rank (sampler='shuffle'; derived from iter_num)
 schedule = None    # ShuffleSchedule, built just before the training loop when sampler='shuffle'
 
@@ -509,12 +508,11 @@ if compile:
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 
-# torch.compile is lazy. Match scratch ordering exactly: materialize only the
-# eval graph here, restore RNG, run the real checkpoint-boundary eval, and defer
-# the train/backward graph prewarm until immediately before the first update.
-# Compiling the train graph before eval can slightly change compiled eval numerics.
+# torch.compile is lazy. Match scratch ordering exactly by materializing eval,
+# then train/backward graphs before restoring checkpoint RNG. The checkpoint was
+# saved after its boundary eval, so that eval must not be repeated below.
 if init_from == 'resume' and compile:
-    print("prewarming compiled eval graph before restoring checkpoint RNG...")
+    print("prewarming compiled eval then train/backward graphs before restoring checkpoint RNG...")
     warm_eval_generator = torch.Generator().manual_seed(eval_seed)
     warm_eval_X, warm_eval_Y = get_batch(
         'train',
@@ -525,11 +523,24 @@ if init_from == 'resume' and compile:
     with torch.no_grad(), ctx:
         model(warm_eval_X, warm_eval_Y)
     model.train()
+    warm_train_X, warm_train_Y = (tensor.to(device) for tensor in resume_batch)
+    with ctx:
+        if use_hybrid:
+            _, warm_loss = model(
+                warm_train_X,
+                warm_train_Y,
+                is_causal=causal_microsteps > 0,
+            )
+        else:
+            _, warm_loss = model(warm_train_X, warm_train_Y)
+        warm_loss = warm_loss / gradient_accumulation_steps
+    scaler.scale(warm_loss).backward()
+    for opt in optimizers:
+        opt.zero_grad(set_to_none=True)
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-    del warm_eval_X, warm_eval_Y
-    resume_train_prewarm_pending = True
-    print("compiled eval prewarm complete")
+    del warm_eval_X, warm_eval_Y, warm_train_X, warm_train_Y, warm_loss
+    print("compiled resume prewarm complete")
 
 # Restore stochastic state only after model/optimizer construction has consumed its
 # initialization randomness, and before the first training batch is fetched.
@@ -880,27 +891,21 @@ while True:
 
     # The final in-budget weights are always evaluated, even when max_iters is not
     # divisible by eval_interval. Validation is fixed and therefore comparable.
-    if (iter_num % eval_interval == 0 or at_budget) and master_process:
+    # A full checkpoint is written after its evaluation. Repeating that boundary
+    # eval can mutate large compiled/cudagraph runtime state even with dropout in
+    # eval mode, so resume must continue directly from the saved post-eval state.
+    resume_boundary_eval = (
+        init_from == 'resume'
+        and iter_num == resume_start_iter
+        and not at_budget
+    )
+    if (iter_num % eval_interval == 0 or at_budget) and master_process and not resume_boundary_eval:
         losses = estimate_loss()
         if at_budget or (iter_num == 0 and eval_only):
             final_metrics = losses
         print(f"step {iter_num}: train loss {losses['train']:.4f}, val loss {losses['val']:.4f}")
 
-        resume_boundary_eval = init_from == 'resume' and iter_num == resume_start_iter
-        if (
-            resume_boundary_eval
-            and resume_checkpoint_role == 'best'
-            and best_iter_num == iter_num
-            and float(losses['val']) != float(best_val_loss)
-        ):
-            raise RuntimeError(
-                f"resume boundary validation changed: checkpoint={float(best_val_loss):.9g}, "
-                f"recomputed={float(losses['val']):.9g}"
-            )
-
-        # The crashed W&B run already contains the checkpoint-boundary evaluation.
-        # Recompute it as a guard, but do not append a duplicate history point.
-        if wandb_log and not resume_boundary_eval:
+        if wandb_log:
             wandb_metrics = {
                 "iter": iter_num,
                 "tokens": iter_num * tokens_per_iter,   # cumulative tokens seen
@@ -920,6 +925,11 @@ while True:
                 save_checkpoint(os.path.join(out_dir, 'ckpt_best.pt'), role='best')
         elif always_save_checkpoint and iter_num > 0:
             save_checkpoint(os.path.join(out_dir, 'ckpt_latest.pt'), role='latest')
+    elif resume_boundary_eval and master_process:
+        print(
+            f"step {iter_num}: preserving checkpoint post-eval state; "
+            "skipping duplicate resume-boundary evaluation"
+        )
     if iter_num == 0 and eval_only:
         break
     # Archive a single weights file for the union of word- and token-series labels.
@@ -949,27 +959,6 @@ while True:
             )
             finalize_best_filename()
         break
-
-    # Scratch compilation first sees eval at step 0 and train/backward only when
-    # entering update 1. Recreate that ordering at a resume boundary, then rewind
-    # every stochastic source so the real first update consumes checkpoint RNG.
-    if resume_train_prewarm_pending:
-        print("prewarming compiled train/backward graph before first resumed update...")
-        with ctx:
-            if use_hybrid:
-                _, warm_loss = model(X, Y, is_causal=causal_microsteps > 0)
-            else:
-                _, warm_loss = model(X, Y)
-            warm_loss = warm_loss / gradient_accumulation_steps
-        scaler.scale(warm_loss).backward()
-        for opt in optimizers:
-            opt.zero_grad(set_to_none=True)
-        if torch.cuda.is_available():
-            torch.cuda.synchronize()
-        del warm_loss
-        restore_resume_stochastic_state()
-        resume_train_prewarm_pending = False
-        print("compiled train prewarm complete; checkpoint RNG restored again")
 
     # forward backward update, with optional gradient accumulation to simulate larger batch size
     # and using the GradScaler if data type is float16
