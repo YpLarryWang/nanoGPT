@@ -99,6 +99,14 @@ def final_checkpoint(out_dir: Path):
     return load(out_dir / manifest["roles"]["final"]), manifest
 
 
+def full_checkpoint_at(out_dir: Path, iteration: int):
+    for path in out_dir.glob("*.pt"):
+        checkpoint = load(path)
+        if checkpoint.get("iter_num") == iteration and "optimizer" in checkpoint:
+            return path
+    raise AssertionError(f"no full checkpoint at iter {iteration} in {out_dir}")
+
+
 def main():
     with tempfile.TemporaryDirectory(prefix="nanogpt-resume-integration-") as temporary:
         root = Path(temporary)
@@ -144,8 +152,7 @@ def main():
             stop=2,
             expected=99,
         )
-        resume_checkpoint = resumed / "ckpt_latest.pt"
-        assert load(resume_checkpoint)["iter_num"] == 2
+        resume_checkpoint = full_checkpoint_at(resumed, 2)
         run(
             root,
             common
