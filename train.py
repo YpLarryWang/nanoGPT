@@ -508,11 +508,12 @@ if compile:
 if ddp:
     model = DDP(model, device_ids=[ddp_local_rank])
 
-# torch.compile is lazy. Match scratch ordering exactly by materializing eval,
-# then train/backward graphs before restoring checkpoint RNG. The checkpoint was
-# saved after its boundary eval, so that eval must not be repeated below.
+# torch.compile is lazy. Materialize the eval graph before restoring checkpoint
+# RNG, matching scratch's eval-before-train compile order. Let the train graph
+# compile naturally on the first real update; prewarming it changes compiled RNG
+# bookkeeping for large dropout models. The saved boundary eval is not repeated.
 if init_from == 'resume' and compile:
-    print("prewarming compiled eval then train/backward graphs before restoring checkpoint RNG...")
+    print("prewarming compiled eval graph before restoring checkpoint RNG...")
     warm_eval_generator = torch.Generator().manual_seed(eval_seed)
     warm_eval_X, warm_eval_Y = get_batch(
         'train',
@@ -523,24 +524,10 @@ if init_from == 'resume' and compile:
     with torch.no_grad(), ctx:
         model(warm_eval_X, warm_eval_Y)
     model.train()
-    warm_train_X, warm_train_Y = (tensor.to(device) for tensor in resume_batch)
-    with ctx:
-        if use_hybrid:
-            _, warm_loss = model(
-                warm_train_X,
-                warm_train_Y,
-                is_causal=causal_microsteps > 0,
-            )
-        else:
-            _, warm_loss = model(warm_train_X, warm_train_Y)
-        warm_loss = warm_loss / gradient_accumulation_steps
-    scaler.scale(warm_loss).backward()
-    for opt in optimizers:
-        opt.zero_grad(set_to_none=True)
     if torch.cuda.is_available():
         torch.cuda.synchronize()
-    del warm_eval_X, warm_eval_Y, warm_train_X, warm_train_Y, warm_loss
-    print("compiled resume prewarm complete")
+    del warm_eval_X, warm_eval_Y
+    print("compiled eval prewarm complete")
 
 # Restore stochastic state only after model/optimizer construction has consumed its
 # initialization randomness, and before the first training batch is fetched.
