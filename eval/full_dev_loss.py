@@ -14,6 +14,8 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import csv
+from dataclasses import dataclass
 import hashlib
 import json
 import math
@@ -43,6 +45,23 @@ DTYPES = {
     "bfloat16": torch.bfloat16,
     "float16": torch.float16,
 }
+
+
+@dataclass(frozen=True)
+class PositionNLL:
+    """Streaming per-position sufficient statistics for fixed-window NLL."""
+
+    nll_sum: np.ndarray
+    token_count: np.ndarray
+
+    @property
+    def mean_nll(self) -> np.ndarray:
+        return np.divide(
+            self.nll_sum,
+            self.token_count,
+            out=np.full_like(self.nll_sum, np.nan, dtype=np.float64),
+            where=self.token_count > 0,
+        )
 
 
 def sha256_file(path: Path, chunk_size: int = 8 * 1024 * 1024) -> str:
@@ -94,7 +113,7 @@ def token_batches(
 
 
 @torch.inference_mode()
-def evaluate_model(
+def _evaluate_model(
     model: torch.nn.Module,
     data: np.ndarray,
     block_size: int,
@@ -102,11 +121,18 @@ def evaluate_model(
     device: torch.device,
     autocast_dtype: torch.dtype | None,
     log_every: int = 25,
-) -> tuple[float, int, float]:
-    """Return token-weighted mean NLL, scored-token count, and elapsed seconds."""
+    collect_positions: bool = False,
+) -> tuple[float, int, float, PositionNLL | None]:
+    """Evaluate once, optionally retaining per-position sufficient statistics."""
     model.eval()
     total_nll = 0.0
     total_tokens = 0
+    position_nll_sum = (
+        np.zeros(block_size, dtype=np.float64) if collect_positions else None
+    )
+    position_token_count = (
+        np.zeros(block_size, dtype=np.int64) if collect_positions else None
+    )
     started = time.monotonic()
     device_type = device.type
     use_autocast = device_type == "cuda" and autocast_dtype is not None
@@ -125,13 +151,32 @@ def evaluate_model(
             else contextlib.nullcontext()
         )
         with autocast:
-            _, mean_loss = model(x, y)
+            logits, mean_loss = model(x, y)
+            token_nll = (
+                torch.nn.functional.cross_entropy(
+                    logits.reshape(-1, logits.size(-1)),
+                    y.reshape(-1),
+                    reduction="none",
+                ).reshape_as(y)
+                if collect_positions
+                else None
+            )
         if mean_loss is None or not torch.isfinite(mean_loss):
             raise RuntimeError(f"non-finite loss at batch {batch_index}: {mean_loss}")
         valid_tokens = y.numel()
-        # Like the HF reference implementation, convert the mean CE back to NLL
-        # using the exact number of valid targets, then aggregate in float64/Python.
-        total_nll += float(mean_loss.detach().double().item()) * valid_tokens
+        if collect_positions:
+            assert token_nll is not None
+            if not torch.isfinite(token_nll).all():
+                raise RuntimeError(f"non-finite token loss at batch {batch_index}")
+            sequence_length = y.size(1)
+            per_position = token_nll.detach().double().sum(dim=0).cpu().numpy()
+            position_nll_sum[:sequence_length] += per_position
+            position_token_count[:sequence_length] += y.size(0)
+            total_nll += float(per_position.sum(dtype=np.float64))
+        else:
+            # Preserve the established v1 scalar protocol when position output
+            # is not requested.
+            total_nll += float(mean_loss.detach().double().item()) * valid_tokens
         total_tokens += valid_tokens
 
         if log_every > 0 and batch_index % log_every == 0:
@@ -149,7 +194,69 @@ def evaluate_model(
     expected_tokens = len(data) - 1
     if total_tokens != expected_tokens:
         raise RuntimeError(f"scored {total_tokens} tokens, expected {expected_tokens}")
-    return total_nll / total_tokens, total_tokens, elapsed
+    position_stats = None
+    if collect_positions:
+        if int(position_token_count.sum()) != total_tokens:
+            raise RuntimeError(
+                "position token count does not reproduce total: "
+                f"{int(position_token_count.sum())} != {total_tokens}"
+            )
+        if not math.isclose(
+            float(position_nll_sum.sum(dtype=np.float64)),
+            total_nll,
+            rel_tol=0.0,
+            abs_tol=1e-10,
+        ):
+            raise RuntimeError("position NLL sums do not reproduce total NLL")
+        position_stats = PositionNLL(position_nll_sum, position_token_count)
+    return total_nll / total_tokens, total_tokens, elapsed, position_stats
+
+
+def evaluate_model(
+    model: torch.nn.Module,
+    data: np.ndarray,
+    block_size: int,
+    batch_size: int,
+    device: torch.device,
+    autocast_dtype: torch.dtype | None,
+    log_every: int = 25,
+) -> tuple[float, int, float]:
+    """Return the established scalar fixed-window NLL result."""
+    mean_nll, tokens, elapsed, _ = _evaluate_model(
+        model,
+        data,
+        block_size,
+        batch_size,
+        device,
+        autocast_dtype,
+        log_every,
+        collect_positions=False,
+    )
+    return mean_nll, tokens, elapsed
+
+
+def evaluate_model_with_positions(
+    model: torch.nn.Module,
+    data: np.ndarray,
+    block_size: int,
+    batch_size: int,
+    device: torch.device,
+    autocast_dtype: torch.dtype | None,
+    log_every: int = 25,
+) -> tuple[float, int, float, PositionNLL]:
+    """Return scalar NLL plus per-position sums/counts from the same pass."""
+    mean_nll, tokens, elapsed, positions = _evaluate_model(
+        model,
+        data,
+        block_size,
+        batch_size,
+        device,
+        autocast_dtype,
+        log_every,
+        collect_positions=True,
+    )
+    assert positions is not None
+    return mean_nll, tokens, elapsed, positions
 
 
 def resolve_dtype(requested: str, checkpoint: dict) -> tuple[str, torch.dtype | None]:
@@ -250,6 +357,36 @@ def write_json_exclusive(path: Path, payload: dict) -> None:
         handle.write("\n")
 
 
+def write_position_csv_exclusive(path: Path, positions: PositionNLL) -> None:
+    """Write one row per loss index without silently overwriting an artifact."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    means = positions.mean_nll
+    with path.open("x", encoding="utf-8", newline="") as handle:
+        writer = csv.DictWriter(
+            handle,
+            fieldnames=(
+                "loss_index",
+                "context_length",
+                "nll_sum",
+                "token_count",
+                "mean_nll",
+            ),
+        )
+        writer.writeheader()
+        for loss_index, (nll_sum, token_count, mean_nll) in enumerate(
+            zip(positions.nll_sum, positions.token_count, means, strict=True)
+        ):
+            writer.writerow(
+                {
+                    "loss_index": loss_index,
+                    "context_length": loss_index + 1,
+                    "nll_sum": f"{float(nll_sum):.17g}",
+                    "token_count": int(token_count),
+                    "mean_nll": f"{float(mean_nll):.17g}",
+                }
+            )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--checkpoint", required=True, type=Path)
@@ -261,11 +398,23 @@ def main() -> None:
     parser.add_argument("--dtype", choices=["auto", *DTYPES], default="auto")
     parser.add_argument("--log-every", type=int, default=25)
     parser.add_argument("--output-json", type=Path)
+    parser.add_argument("--position-csv", type=Path)
+    parser.add_argument(
+        "--allow-milestone",
+        action="store_true",
+        help="accept role=milestone in addition to final",
+    )
     args = parser.parse_args()
 
     checkpoint_path = args.checkpoint.resolve()
     data_dir = args.data_dir.resolve()
     data_path = data_dir / ("val.bin" if args.split == "dev" else "test.bin")
+    requested_outputs = [path.resolve() for path in (args.output_json, args.position_csv) if path]
+    if len(set(requested_outputs)) != len(requested_outputs):
+        raise ValueError("--output-json and --position-csv must be distinct paths")
+    existing_outputs = [path for path in requested_outputs if path.exists()]
+    if existing_outputs:
+        raise FileExistsError(existing_outputs[0])
     if not checkpoint_path.is_file():
         raise FileNotFoundError(checkpoint_path)
     if not data_path.is_file():
@@ -281,9 +430,11 @@ def main() -> None:
     state_dict = checkpoint.get("model")
     if not isinstance(model_args, dict) or not isinstance(state_dict, dict):
         raise ValueError("checkpoint must contain model_args and model state dictionaries")
-    if checkpoint.get("checkpoint_role") != "final":
+    checkpoint_role = checkpoint.get("checkpoint_role")
+    allowed_roles = {"final", "milestone"} if args.allow_milestone else {"final"}
+    if checkpoint_role not in allowed_roles:
         raise ValueError(
-            f"expected checkpoint_role='final', got {checkpoint.get('checkpoint_role')!r}"
+            f"expected checkpoint_role in {sorted(allowed_roles)}, got {checkpoint_role!r}"
         )
     block_size = int(model_args["block_size"])
     checkpoint_eval_batch = checkpoint.get("config", {}).get("eval_batch_size")
@@ -323,23 +474,39 @@ def main() -> None:
         f"data_sha256={validation['actual_sha256']}",
         flush=True,
     )
-    avg_nll, scored_tokens, elapsed = evaluate_model(
-        model=model,
-        data=data,
-        block_size=block_size,
-        batch_size=batch_size,
-        device=device,
-        autocast_dtype=autocast_dtype,
-        log_every=args.log_every,
-    )
+    if args.position_csv:
+        avg_nll, scored_tokens, elapsed, position_stats = evaluate_model_with_positions(
+            model=model,
+            data=data,
+            block_size=block_size,
+            batch_size=batch_size,
+            device=device,
+            autocast_dtype=autocast_dtype,
+            log_every=args.log_every,
+        )
+    else:
+        avg_nll, scored_tokens, elapsed = evaluate_model(
+            model=model,
+            data=data,
+            block_size=block_size,
+            batch_size=batch_size,
+            device=device,
+            autocast_dtype=autocast_dtype,
+            log_every=args.log_every,
+        )
+        position_stats = None
     result = {
-        "schema_version": 1,
+        "schema_version": 2 if position_stats is not None else 1,
         "protocol": PROTOCOLS[args.split],
         "split": args.split,
         "run_name": checkpoint.get("config", {}).get("wandb_run_name"),
         "checkpoint": str(checkpoint_path),
         "checkpoint_role": checkpoint.get("checkpoint_role"),
         "iter_num": checkpoint.get("iter_num"),
+        "tokens_seen": checkpoint.get("tokens_seen"),
+        "words_seen": checkpoint.get("words_seen"),
+        "checkpoint_labels": checkpoint.get("checkpoint_labels", []),
+        "checkpoint_sha256": sha256_file(checkpoint_path),
         "dataset": checkpoint.get("config", {}).get("dataset"),
         "data_dir": str(data_dir),
         "data_path": str(data_path),
@@ -364,6 +531,7 @@ def main() -> None:
         "perplexity": math.exp(avg_nll),
         "elapsed_seconds": elapsed,
         "tokens_per_second": scored_tokens / elapsed if elapsed else None,
+        "position_csv": str(args.position_csv.resolve()) if args.position_csv else None,
     }
     if args.split == "dev":
         result.update(
@@ -390,6 +558,10 @@ def main() -> None:
     if args.output_json:
         write_json_exclusive(args.output_json.resolve(), result)
         print(f"wrote {args.output_json.resolve()}", flush=True)
+    if args.position_csv:
+        assert position_stats is not None
+        write_position_csv_exclusive(args.position_csv.resolve(), position_stats)
+        print(f"wrote {args.position_csv.resolve()}", flush=True)
 
 
 if __name__ == "__main__":

@@ -18,6 +18,7 @@ from full_dev_loss import (  # noqa: E402
     OFFICIAL_TEST_REPO,
     OFFICIAL_TEST_REVISION,
     evaluate_model,
+    evaluate_model_with_positions,
     sha256_file,
     token_batches,
     validate_test_data,
@@ -28,6 +29,19 @@ class MeanTargetModel(torch.nn.Module):
     def forward(self, x, targets=None):
         del x
         return torch.empty(0), targets.float().mean()
+
+
+class UniformLogitModel(torch.nn.Module):
+    def __init__(self, vocab_size: int):
+        super().__init__()
+        self.vocab_size = vocab_size
+
+    def forward(self, x, targets=None):
+        logits = torch.zeros(*x.shape, self.vocab_size, device=x.device)
+        loss = torch.nn.functional.cross_entropy(
+            logits.reshape(-1, self.vocab_size), targets.reshape(-1)
+        )
+        return logits, loss
 
 
 class FullDevLossTest(unittest.TestCase):
@@ -57,6 +71,26 @@ class FullDevLossTest(unittest.TestCase):
         )
         self.assertEqual(tokens, 11)
         self.assertAlmostEqual(loss, float(np.arange(1, 12).mean()), places=7)
+
+    def test_position_sums_counts_and_context_reproduce_total(self):
+        data = np.arange(12, dtype=np.uint16)
+        loss, tokens, _, positions = evaluate_model_with_positions(
+            model=UniformLogitModel(vocab_size=16),
+            data=data,
+            block_size=4,
+            batch_size=2,
+            device=torch.device("cpu"),
+            autocast_dtype=None,
+            log_every=0,
+        )
+        self.assertEqual(tokens, 11)
+        np.testing.assert_array_equal(positions.token_count, [3, 3, 3, 2])
+        self.assertAlmostEqual(
+            float(positions.nll_sum.sum()) / int(positions.token_count.sum()),
+            loss,
+            places=12,
+        )
+        np.testing.assert_allclose(positions.mean_nll, np.log(16), atol=1e-7)
 
     def test_sha256_file(self):
         with tempfile.TemporaryDirectory() as tmp:

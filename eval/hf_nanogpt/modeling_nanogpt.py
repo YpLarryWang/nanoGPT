@@ -17,7 +17,10 @@ model.py on purpose (both required by the eval harness):
     left-padded batches; nanoGPT's own forward assumes dense, causal-only inputs).
 """
 
+import hashlib
 import math
+import os
+import random
 
 import torch
 import torch.nn as nn
@@ -110,10 +113,109 @@ def make_norm(config):
     return LayerNorm(config.n_embd, bias=config.bias, eps=config.layer_norm_epsilon)
 
 
-def attn_res_mix(sources, q, norm):
+ATTN_RES_MASK_MODES = {"none", "old", "embed", "random_count_matched"}
+
+
+def _read_attn_res_mask_config():
+    mode = os.environ.get("NANOGPT_ATTNRES_MASK", "none").strip()
+    if mode not in ATTN_RES_MASK_MODES:
+        raise ValueError(
+            f"invalid NANOGPT_ATTNRES_MASK={mode!r}; "
+            f"choose one of {sorted(ATTN_RES_MASK_MODES)}"
+        )
+    seed_text = os.environ.get("NANOGPT_ATTNRES_MASK_SEED", "20260718")
+    try:
+        seed = int(seed_text)
+    except ValueError as error:
+        raise ValueError(
+            f"NANOGPT_ATTNRES_MASK_SEED must be an integer, got {seed_text!r}"
+        ) from error
+    return mode, seed
+
+
+_ATTN_RES_MASK_MODE, _ATTN_RES_MASK_SEED = _read_attn_res_mask_config()
+
+
+def build_attn_res_keep_mask(
+    *,
+    num_blocks,
+    layer_idx,
+    router_site,
+    block_start,
+    mode,
+    control_seed,
+):
+    """Return the q1/q2 source keep-set with block-age-aware semantics.
+
+    ``blocks`` contains the embedding at index 0 followed by completed AttnRes
+    blocks. The final source is always ``partial``. At a block-start q1,
+    ``partial`` is the most recently completed block; elsewhere it is the
+    current block and the final entry of ``blocks`` is the most recent completed
+    block.
+    """
+    if mode not in ATTN_RES_MASK_MODES:
+        raise ValueError(f"unknown AttnRes mask mode: {mode!r}")
+    if router_site not in {"q1", "q2"}:
+        raise ValueError(f"router_site must be q1 or q2, got {router_site!r}")
+    if num_blocks < 0 or layer_idx < 0:
+        raise ValueError("num_blocks and layer_idx must be non-negative")
+
+    source_count = num_blocks + 1
+    keep = [True] * source_count
+    if mode == "none":
+        return torch.tensor(keep, dtype=torch.bool)
+
+    # Source 0 is a separate embedding source whenever it lives in `blocks`.
+    # At the first layer's q1, blocks is empty and the sole partial is itself
+    # the embedding, so embed masking correctly remains a no-op.
+    if mode == "embed":
+        if num_blocks > 0:
+            keep[0] = False
+        return torch.tensor(keep, dtype=torch.bool)
+
+    completed_indices = list(range(1, num_blocks))
+    if router_site == "q1" and block_start:
+        # The age-1 block is still partial, so every completed block in
+        # `blocks` is age >= 2.
+        old_indices = completed_indices
+    else:
+        # The last completed block is age 1; all earlier ones are old.
+        old_indices = completed_indices[:-1]
+
+    if mode == "old":
+        removed = old_indices
+    else:
+        # Match only the number of removed completed-block sources. Embedding
+        # and partial are never eligible. The stable site-specific seed makes
+        # reruns independent of Python hash randomization and call order.
+        digest = hashlib.sha256(
+            f"{control_seed}:{layer_idx}:{router_site}:{int(block_start)}".encode()
+        ).digest()
+        site_seed = int.from_bytes(digest[:8], "big", signed=False)
+        removed = random.Random(site_seed).sample(
+            completed_indices, k=len(old_indices)
+        )
+    for index in removed:
+        keep[index] = False
+    if not any(keep):
+        raise RuntimeError("AttnRes diagnostic mask removed every source")
+    return torch.tensor(keep, dtype=torch.bool)
+
+
+def attn_res_mix(sources, q, norm, keep_mask=None):
     """Softmax attention over depth; normed keys and raw values, matching nanoGPT."""
     values = torch.stack(sources)
     logits = torch.einsum("c,sbtc->sbt", q, norm(values))
+    if keep_mask is not None:
+        keep_mask = keep_mask.to(device=logits.device, dtype=torch.bool)
+        if keep_mask.ndim != 1 or keep_mask.numel() != len(sources):
+            raise ValueError(
+                f"keep_mask shape {tuple(keep_mask.shape)} does not match "
+                f"{len(sources)} sources"
+            )
+        if not bool(keep_mask.any()):
+            raise ValueError("keep_mask must retain at least one source")
+        logits = logits.masked_fill(~keep_mask[:, None, None], float("-inf"))
     return torch.einsum("sbt,sbtc->btc", logits.softmax(dim=0), values)
 
 
@@ -241,6 +343,7 @@ class Block(nn.Module):
         self.attn = CausalSelfAttention(config)
         self.ln_2 = make_norm(config)
         self.mlp = make_mlp(config)
+        self.layer_idx = layer_idx
         self.use_attn_res = config.use_attn_res
         if config.use_attn_res:
             self.block_start = (2 * layer_idx) % config.attn_res_block_size == 0
@@ -255,13 +358,37 @@ class Block(nn.Module):
         return x
 
     def forward_attn_res(self, blocks, partial, attention_mask=None):
-        h = attn_res_mix(blocks + [partial], self.attn_res_q1, self.attn_res_norm1)
+        q1_keep = None
+        if _ATTN_RES_MASK_MODE != "none":
+            q1_keep = build_attn_res_keep_mask(
+                num_blocks=len(blocks),
+                layer_idx=self.layer_idx,
+                router_site="q1",
+                block_start=self.block_start,
+                mode=_ATTN_RES_MASK_MODE,
+                control_seed=_ATTN_RES_MASK_SEED,
+            )
+        h = attn_res_mix(
+            blocks + [partial], self.attn_res_q1, self.attn_res_norm1, q1_keep
+        )
         if self.block_start:
             blocks = blocks + [partial]
             partial = None
         attn_out = self.attn(self.ln_1(h), attention_mask)
         partial = attn_out if partial is None else partial + attn_out
-        h = attn_res_mix(blocks + [partial], self.attn_res_q2, self.attn_res_norm2)
+        q2_keep = None
+        if _ATTN_RES_MASK_MODE != "none":
+            q2_keep = build_attn_res_keep_mask(
+                num_blocks=len(blocks),
+                layer_idx=self.layer_idx,
+                router_site="q2",
+                block_start=self.block_start,
+                mode=_ATTN_RES_MASK_MODE,
+                control_seed=_ATTN_RES_MASK_SEED,
+            )
+        h = attn_res_mix(
+            blocks + [partial], self.attn_res_q2, self.attn_res_norm2, q2_keep
+        )
         partial = partial + self.mlp(self.ln_2(h))
         return blocks, partial
 
