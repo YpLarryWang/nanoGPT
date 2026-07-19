@@ -55,9 +55,12 @@ RESUME=1 bash eval/diag_masked_zero_shot.sh <run> embed
 RESUME=1 bash eval/diag_masked_zero_shot.sh <run> random_count_matched
 ```
 
-The script evaluates full BLiMP, COMPS, and entity tracking. The random control
-uses the frozen seed `20260718`. `none` is also supported for the one-checkpoint
-parity smoke, but final unmasked task trees are otherwise reused.
+The script evaluates full BLiMP, COMPS, and entity tracking. Both evaluator tie
+breaking and the random control use the frozen seed `20260718`. `none` is also
+supported for the one-checkpoint parity smoke, but final unmasked task trees are
+otherwise reused. Parity requires byte-identical predictions and identical
+temperature/average report headlines; a granular report can differ when the
+legacy unseeded evaluator randomly chose between duplicate candidate strings.
 
 Vast storage is not persistent. Sync each completed series/result tree to the
 local backup immediately; do not wait for the full grid.
