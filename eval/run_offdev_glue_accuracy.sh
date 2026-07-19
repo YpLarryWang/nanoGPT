@@ -94,8 +94,10 @@ run_task() {
 [[ ! -e "$EVAL_REPO/models/$VARIANT" ]] || fail "existing saved FT models need review"
 mkdir "$LOCK_DIR" 2>/dev/null || fail "another GLUE queue appears active for $VARIANT"
 
-ACTIVE="$(pgrep -af '[e]valuation_pipeline.finetune.run|[e]val_glue' 2>/dev/null || true)"
-[[ -z "$ACTIVE" ]] || { echo "$ACTIVE" >&2; fail "another GLUE evaluation is active"; }
+if [[ "${ALLOW_CONCURRENT_GLUE:-0}" != "1" ]]; then
+  ACTIVE="$(pgrep -af '[e]valuation_pipeline.finetune.run|[e]val_glue' 2>/dev/null || true)"
+  [[ -z "$ACTIVE" ]] || { echo "$ACTIVE" >&2; fail "another GLUE evaluation is active"; }
+fi
 
 mkdir -p "$LOG_DIR" results
 trap cleanup EXIT
@@ -109,6 +111,7 @@ echo "git_sha=$(git rev-parse HEAD)"
 echo "eval_repo=$EVAL_REPO"
 echo "protocol=official-default-ft-metrics-and-selection;final-summary=seven-task-accuracy-mean"
 echo "microbatch=$GLUE_MICROBATCH;effective-batches=16,32"
+echo "allow_concurrent_glue=${ALLOW_CONCURRENT_GLUE:-0};cuda_visible_devices=${CUDA_VISIBLE_DEVICES:-unset}"
 
 export PATH="$(dirname "$EVAL_PY"):$PATH"
 cd "$EVAL_REPO"
