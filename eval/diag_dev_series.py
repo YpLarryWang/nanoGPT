@@ -16,6 +16,7 @@ from pathlib import Path
 import shutil
 import subprocess
 import sys
+import tempfile
 
 
 CHECKPOINT_LABELS = ("1M", "5M", "10M", "20M", "50M", "final")
@@ -256,8 +257,28 @@ def write_plan(path: Path, plan: list[dict], resume: bool) -> None:
     if path.exists():
         if not resume:
             raise FileExistsError(path)
-        if load_json(path) != payload:
+        existing = load_json(path)
+        if existing == payload:
+            return
+        old_plan = existing.get("checkpoints")
+        if not isinstance(old_plan, list):
             raise RuntimeError(f"existing plan differs from current manifest: {path}")
+        current_by_label = {item["checkpoint_label"]: item for item in plan}
+        if not old_plan or any(
+            current_by_label.get(item.get("checkpoint_label")) != item for item in old_plan
+        ):
+            raise RuntimeError(f"existing plan is not an exact subset of current manifest: {path}")
+        with tempfile.NamedTemporaryFile(
+            "w", encoding="utf-8", dir=path.parent, prefix="plan-upgrade-", delete=False
+        ) as handle:
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.write("\n")
+            temporary = Path(handle.name)
+        temporary.replace(path)
+        print(
+            f"upgraded checkpoint plan from {len(old_plan)} to {len(plan)} points: {path}",
+            flush=True,
+        )
         return
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("x", encoding="utf-8") as handle:

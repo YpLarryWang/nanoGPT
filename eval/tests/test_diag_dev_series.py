@@ -3,6 +3,7 @@ from __future__ import annotations
 import sys
 import tempfile
 import unittest
+import json
 from pathlib import Path
 
 
@@ -14,6 +15,7 @@ from diag_dev_series import (  # noqa: E402
     DENSE_10M_LABELS,
     FRESH_100M_LABELS,
     diagnosis_plan,
+    write_plan,
 )
 
 
@@ -128,6 +130,20 @@ class DiagnosisPlanTest(unittest.TestCase):
         plan = diagnosis_plan(Path("/unused"), manifest, FRESH_100M_LABELS)
         self.assertEqual(len(plan), 9)
         self.assertTrue(all(item["checkpoint_role"] == "milestone" for item in plan))
+
+    def test_resume_upgrades_only_an_exact_plan_subset(self):
+        full = diagnosis_plan(Path("/unused"), self.manifest())
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "plan.json"
+            write_plan(path, full[:2], resume=False)
+            write_plan(path, full, resume=True)
+            self.assertEqual(len(json.loads(path.read_text())["checkpoints"]), len(full))
+
+            corrupted = json.loads(path.read_text())
+            corrupted["checkpoints"][0]["iter_num"] = 999
+            path.write_text(json.dumps(corrupted), encoding="utf-8")
+            with self.assertRaisesRegex(RuntimeError, "not an exact subset"):
+                write_plan(path, full, resume=True)
 
 
 if __name__ == "__main__":
