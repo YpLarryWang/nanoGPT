@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 import unittest
@@ -11,6 +12,8 @@ sys.path.insert(0, str(ROOT / "eval"))
 
 from diag_parse_results import (  # noqa: E402
     parse_accuracy_report,
+    provenance_fields,
+    provenance_index,
     run_metadata,
     source_host_for_plan,
     validate_blimp_predictions,
@@ -71,6 +74,27 @@ filler_gap_dependency: 68.50
                 source_host_for_plan(plan, [host_root]),
                 "vast2_3090",
             )
+
+    def test_provenance_manifest_is_indexed_by_host_and_run(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp) / "jetstream"
+            root.mkdir()
+            path = root / "run-checkpoint_manifest.json"
+            path.write_text(json.dumps({
+                "run_name": "run",
+                "provenance": {
+                    "git_sha": "abc123",
+                    "git_dirty": True,
+                    "gpu": "A100",
+                    "data_fingerprints": {"val_bin_sha256": "valhash"},
+                },
+            }))
+            manifest, indexed_path = provenance_index([root])[("jetstream", "run")]
+            fields = provenance_fields(manifest, indexed_path)
+            self.assertEqual(fields["source_git_sha"], "abc123")
+            self.assertEqual(fields["source_git_dirty"], True)
+            self.assertEqual(fields["source_gpu"], "A100")
+            self.assertEqual(fields["val_bin_sha256"], "valhash")
 
 
 if __name__ == "__main__":

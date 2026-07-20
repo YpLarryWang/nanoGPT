@@ -97,6 +97,45 @@ def source_host_for_plan(plan_path: Path, series_roots: list[Path]) -> str:
     return source_host
 
 
+def provenance_index(roots: list[Path]) -> dict[tuple[str, str], tuple[dict, Path]]:
+    """Index copied checkpoint manifests by ``(<source host>, <run name>)``."""
+    output = {}
+    for root in roots:
+        source_host = root.name
+        for path in sorted(root.rglob("*checkpoint_manifest.json")):
+            manifest = load_json(path)
+            run_name = manifest.get("run_name")
+            if not run_name or not isinstance(manifest.get("provenance"), dict):
+                continue
+            key = (source_host, run_name)
+            if key in output:
+                raise RuntimeError(
+                    f"duplicate provenance manifest for {key}: {output[key][1]}, {path}"
+                )
+            output[key] = (manifest, path)
+    return output
+
+
+def provenance_fields(manifest: dict, manifest_path: Path) -> dict:
+    provenance = manifest["provenance"]
+    fingerprints = provenance.get("data_fingerprints", {})
+    return {
+        "source_manifest": str(manifest_path),
+        "source_git_sha": provenance.get("git_sha", ""),
+        "source_git_dirty": provenance.get("git_dirty", ""),
+        "source_hostname": provenance.get("hostname", ""),
+        "source_platform": provenance.get("platform", ""),
+        "source_torch_version": provenance.get("torch_version", ""),
+        "source_cuda_version": provenance.get("cuda_version", ""),
+        "source_gpu": provenance.get("gpu", ""),
+        "source_world_size": provenance.get("world_size", ""),
+        "train_bin_sha256": fingerprints.get("train_bin_sha256", ""),
+        "val_bin_sha256": fingerprints.get("val_bin_sha256", ""),
+        "tokenizer_sha256": fingerprints.get("tokenizer_sha256", ""),
+        "word_map_sha256": fingerprints.get("word_map_sha256", ""),
+    }
+
+
 def find_model_dir(roots: list[Path], model_name: str, required: bool) -> Path | None:
     candidates = model_dirs(roots, model_name)
     if len(candidates) > 1:
@@ -206,6 +245,12 @@ def parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--series-root", type=Path, action="append", required=True)
     parser.add_argument("--eval-results-root", type=Path, action="append", required=True)
+    parser.add_argument(
+        "--provenance-root",
+        type=Path,
+        action="append",
+        help="copied <source-host> directory containing checkpoint manifests",
+    )
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument(
         "--mask-mode",
@@ -230,11 +275,15 @@ def main() -> None:
     args = parse_args()
     series_roots = [path.resolve() for path in args.series_root]
     eval_roots = [path.resolve() for path in args.eval_results_root]
+    provenance_roots = [path.resolve() for path in (args.provenance_root or [])]
     output_dir = args.output_dir.resolve()
     mask_modes = tuple(args.mask_modes or DEFAULT_MASK_MODES)
     plan_paths = sorted({path for root in series_roots for path in root.rglob("plan.json")})
     if not plan_paths:
         raise FileNotFoundError("no plan.json found under series roots")
+    provenance = provenance_index(provenance_roots)
+    if args.supplement and not provenance:
+        raise RuntimeError("supplement parsing requires copied --provenance-root manifests")
 
     inventory_rows = []
     behavior_rows = []
@@ -256,6 +305,14 @@ def main() -> None:
         plans[run_name] = plan
         architecture, seed = run_metadata(run_name)
         source_host = source_host_for_plan(plan_path, series_roots)
+        provenance_entry = provenance.get((source_host, run_name))
+        if args.supplement and provenance_entry is None:
+            raise RuntimeError(
+                f"missing provenance manifest for source_host={source_host} run={run_name}"
+            )
+        manifest_fields = (
+            provenance_fields(*provenance_entry) if provenance_entry is not None else {}
+        )
         for item in plan:
             inventory_rows.append(
                 {
@@ -270,6 +327,7 @@ def main() -> None:
                         "corpus": corpus,
                         "source_host": source_host,
                         "physical_verified": 0,
+                        **manifest_fields,
                     } if args.supplement else {}),
                 }
             )
@@ -419,7 +477,11 @@ def main() -> None:
     )
     if args.supplement:
         inventory_fields = inventory_fields[:3] + (
-            "corpus", "source_host", "physical_verified",
+            "corpus", "source_host", "physical_verified", "source_manifest",
+            "source_git_sha", "source_git_dirty", "source_hostname", "source_platform",
+            "source_torch_version", "source_cuda_version", "source_gpu",
+            "source_world_size", "train_bin_sha256", "val_bin_sha256",
+            "tokenizer_sha256", "word_map_sha256",
         ) + inventory_fields[3:]
         behavior_fields = behavior_fields[:3] + ("corpus",) + behavior_fields[3:6] + (
             "mask_seed",
