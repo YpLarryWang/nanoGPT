@@ -73,25 +73,48 @@ else
   RESULT_NAME="${VARIANT}--mask${MODE}"
 fi
 if [[ "$MODE" == random_count_matched ]]; then
-  HFDIR="$HF_ROOT/${VARIANT}--maskrandom_count_matched"
+  SHARED_HFDIR="$HF_ROOT/${VARIANT}--maskrandom_count_matched"
 else
-  HFDIR="$HF_ROOT/$RESULT_NAME"
+  SHARED_HFDIR="$HF_ROOT/$RESULT_NAME"
 fi
-if [[ ! -f "$HFDIR/checkpoint_source.json" ]]; then
-  [[ ! -e "$HFDIR" ]] || { echo "incomplete HF export exists: $HFDIR" >&2; exit 1; }
+if [[ ! -f "$SHARED_HFDIR/checkpoint_source.json" ]]; then
+  [[ ! -e "$SHARED_HFDIR" ]] || {
+    echo "incomplete HF export exists: $SHARED_HFDIR" >&2
+    exit 1
+  }
   "$EVAL_PY" "$NANO_REPO/eval/convert_nanogpt_to_hf.py" \
-    --ckpt "$CKPT" --tokenizer "$TOK" --out "$HFDIR" --dtype float32
+    --ckpt "$CKPT" --tokenizer "$TOK" --out "$SHARED_HFDIR" --dtype float32
 else
   "$EVAL_PY" -c '
 import json, os, sys
 p, expected = sys.argv[1:]
 d = json.load(open(p, encoding="utf-8"))
 assert d.get("filename") == os.path.basename(expected), (d.get("filename"), expected)
-' "$HFDIR/checkpoint_source.json" "$CKPT"
-  cmp -s "$NANO_REPO/eval/hf_nanogpt/modeling_nanogpt.py" "$HFDIR/modeling_nanogpt.py" || {
-    echo "cached HF export has stale modeling_nanogpt.py: $HFDIR" >&2
+' "$SHARED_HFDIR/checkpoint_source.json" "$CKPT"
+  cmp -s "$NANO_REPO/eval/hf_nanogpt/modeling_nanogpt.py" "$SHARED_HFDIR/modeling_nanogpt.py" || {
+    echo "cached HF export has stale modeling_nanogpt.py: $SHARED_HFDIR" >&2
     exit 1
   }
+fi
+
+# The evaluator derives its result identity from the model path basename. Keep
+# one physical random-control conversion, but expose a seed-qualified symlink
+# for every supplementary draw so it cannot overwrite the legacy 20260718 tree.
+HFDIR="$SHARED_HFDIR"
+IDENTITY_LINK=""
+if [[ "$MODE" == random_count_matched && "$MASK_SEED" != 20260718 ]]; then
+  HFDIR="$HF_ROOT/$RESULT_NAME"
+  expected_target="$(basename "$SHARED_HFDIR")"
+  if [[ -L "$HFDIR" ]]; then
+    [[ "$(readlink "$HFDIR")" == "$expected_target" ]] || {
+      echo "seed identity symlink points to the wrong target: $HFDIR" >&2
+      exit 1
+    }
+  else
+    [[ ! -e "$HFDIR" ]] || { echo "seed identity path is not a symlink: $HFDIR" >&2; exit 1; }
+    ln -s "$expected_target" "$HFDIR"
+  fi
+  IDENTITY_LINK="$HFDIR"
 fi
 
 export PATH="$(dirname "$EVAL_PY"):$PATH"
@@ -167,6 +190,12 @@ runpy.run_module("evaluation_pipeline.sentence_zero_shot.run", run_name="__main_
   )
   task_complete "$task" || { echo "$task did not produce report + predictions" >&2; exit 1; }
 done
+
+if [[ -n "$IDENTITY_LINK" ]]; then
+  [[ -L "$IDENTITY_LINK" ]]
+  rm -- "$IDENTITY_LINK"
+  echo ">> removed seed identity symlink: $IDENTITY_LINK"
+fi
 
 if [[ "$MODE" == none ]]; then
   [[ "$TASK_SELECTOR" == all ]] || {
