@@ -16,6 +16,8 @@ TASK_LEAVES = {
     "entity_tracking": "entity_tracking",
 }
 EXPECTED_BLIMP_TERMS = 13
+EXPECTED_BLIMP_TASKS = 67
+EXPECTED_BLIMP_ITEMS = 59_875
 DEFAULT_MASK_MODES = ("old", "embed", "random_count_matched")
 MASK_SEEDS = (20260718, 20260719, 20260720, 20260721, 20260722)
 
@@ -82,6 +84,19 @@ def model_dirs(roots: list[Path], model_name: str) -> list[Path]:
     return candidates
 
 
+def source_host_for_plan(plan_path: Path, series_roots: list[Path]) -> str:
+    """Infer the synced source host from a ``<host>/series`` root."""
+    matches = [root for root in series_roots if plan_path.is_relative_to(root)]
+    if len(matches) != 1:
+        raise RuntimeError(
+            f"expected one series root for {plan_path}, got {matches}"
+        )
+    source_host = matches[0].parent.name
+    if not source_host:
+        raise RuntimeError(f"cannot infer source host from {matches[0]}")
+    return source_host
+
+
 def find_model_dir(roots: list[Path], model_name: str, required: bool) -> Path | None:
     candidates = model_dirs(roots, model_name)
     if len(candidates) > 1:
@@ -97,6 +112,25 @@ def task_artifacts(model_dir: Path, task: str) -> tuple[Path, Path]:
     leaf = TASK_LEAVES[task]
     root = model_dir / "main" / "zero_shot" / "causal" / task / leaf
     return root / "best_temperature_report.txt", root / "predictions.json"
+
+
+def validate_blimp_predictions(path: Path) -> None:
+    payload = load_json(path)
+    if len(payload) != EXPECTED_BLIMP_TASKS:
+        raise RuntimeError(
+            f"expected {EXPECTED_BLIMP_TASKS} BLiMP task predictions, got {len(payload)}: {path}"
+        )
+    identifiers = []
+    for task, task_payload in payload.items():
+        predictions = task_payload.get("predictions") if isinstance(task_payload, dict) else None
+        if not isinstance(predictions, list) or not predictions:
+            raise RuntimeError(f"invalid or empty BLiMP predictions for {task}: {path}")
+        identifiers.extend(item.get("id") for item in predictions if isinstance(item, dict))
+    if len(identifiers) != EXPECTED_BLIMP_ITEMS or len(set(identifiers)) != len(identifiers):
+        raise RuntimeError(
+            f"expected {EXPECTED_BLIMP_ITEMS} unique BLiMP items, got "
+            f"{len(identifiers)} rows/{len(set(identifiers))} unique: {path}"
+        )
 
 
 def add_task_rows(
@@ -119,6 +153,7 @@ def add_task_rows(
         )
     parsed = parse_accuracy_report(report)
     if task == "blimp":
+        validate_blimp_predictions(predictions)
         term_count = sum(row["level"] == "linguistics_term" for row in parsed)
         if term_count != EXPECTED_BLIMP_TERMS:
             raise RuntimeError(
@@ -220,6 +255,7 @@ def main() -> None:
             raise ValueError(f"duplicate series plan for {run_name}")
         plans[run_name] = plan
         architecture, seed = run_metadata(run_name)
+        source_host = source_host_for_plan(plan_path, series_roots)
         for item in plan:
             inventory_rows.append(
                 {
@@ -230,7 +266,11 @@ def main() -> None:
                     )},
                     "architecture": architecture,
                     "seed": seed,
-                    **({"corpus": corpus} if args.supplement else {}),
+                    **({
+                        "corpus": corpus,
+                        "source_host": source_host,
+                        "physical_verified": 0,
+                    } if args.supplement else {}),
                 }
             )
             checkpoint_dir = plan_path.parent / item["checkpoint_label"]
@@ -245,6 +285,7 @@ def main() -> None:
                         "run_name": run_name,
                         "architecture": architecture,
                         "seed": seed,
+                        **({"corpus": corpus} if args.supplement else {}),
                         "checkpoint_label": item["checkpoint_label"],
                         "checkpoint_role": item["checkpoint_role"],
                         "iter_num": item["iter_num"],
@@ -263,6 +304,7 @@ def main() -> None:
                             "run_name": run_name,
                             "architecture": architecture,
                             "seed": seed,
+                            **({"corpus": corpus} if args.supplement else {}),
                             "checkpoint_label": item["checkpoint_label"],
                             "iter_num": item["iter_num"],
                             "words_seen": item["words_seen"],
@@ -352,6 +394,18 @@ def main() -> None:
         row["seed"], row["architecture"], row["iter_num"], row["mask_mode"],
         str(row.get("mask_seed", "")), row["task"], row["level"], row["term"],
     ))
+    if args.supplement:
+        hashes = {
+            (row["run_name"], row["checkpoint_label"]): row["checkpoint_sha256"]
+            for row in dev_rows
+        }
+        for row in inventory_rows:
+            checkpoint_hash = hashes.get((row["run_name"], row["checkpoint_label"]))
+            if checkpoint_hash:
+                row["sha256"] = checkpoint_hash
+                row["physical_verified"] = 1
+        if not args.allow_incomplete and any(not row["sha256"] for row in inventory_rows):
+            raise RuntimeError("strict supplement inventory contains an unhashed checkpoint")
 
     prefix = "diag_supp_" if args.supplement else "diag_"
     inventory_fields = (
@@ -364,22 +418,29 @@ def main() -> None:
         "mask_mode", "task", "level", "term", "accuracy", "report_path",
     )
     if args.supplement:
-        inventory_fields = inventory_fields[:3] + ("corpus",) + inventory_fields[3:]
+        inventory_fields = inventory_fields[:3] + (
+            "corpus", "source_host", "physical_verified",
+        ) + inventory_fields[3:]
         behavior_fields = behavior_fields[:3] + ("corpus",) + behavior_fields[3:6] + (
             "mask_seed",
         ) + behavior_fields[6:]
 
     write_csv_exclusive(output_dir / f"{prefix}checkpoint_inventory.csv", inventory_rows, inventory_fields)
     write_csv_exclusive(output_dir / f"{prefix}behavior_long.csv", behavior_rows, behavior_fields)
-    write_csv_exclusive(output_dir / f"{prefix}dev_loss.csv", dev_rows, (
+    dev_fields = (
         "run_name", "architecture", "seed", "checkpoint_label", "checkpoint_role",
         "iter_num", "tokens_seen", "words_seen", "mean_nll", "scored_tokens",
         "val_bin_sha256", "checkpoint_sha256", "source_json",
-    ))
-    write_csv_exclusive(output_dir / f"{prefix}position_nll.csv", position_rows, (
+    )
+    position_fields = (
         "run_name", "architecture", "seed", "checkpoint_label", "iter_num", "words_seen",
         "loss_index", "context_length", "nll_sum", "token_count", "mean_nll",
-    ))
+    )
+    if args.supplement:
+        dev_fields = dev_fields[:3] + ("corpus",) + dev_fields[3:]
+        position_fields = position_fields[:3] + ("corpus",) + position_fields[3:]
+    write_csv_exclusive(output_dir / f"{prefix}dev_loss.csv", dev_rows, dev_fields)
+    write_csv_exclusive(output_dir / f"{prefix}position_nll.csv", position_rows, position_fields)
     print(
         f"wrote diagnosis CSVs: inventory={len(inventory_rows)} behavior={len(behavior_rows)} "
         f"dev={len(dev_rows)} position={len(position_rows)}",

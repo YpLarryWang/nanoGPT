@@ -9,7 +9,12 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "eval"))
 
-from diag_parse_results import parse_accuracy_report, run_metadata  # noqa: E402
+from diag_parse_results import (  # noqa: E402
+    parse_accuracy_report,
+    run_metadata,
+    source_host_for_plan,
+    validate_blimp_predictions,
+)
 
 
 class ParseDiagnosisResultsTest(unittest.TestCase):
@@ -50,6 +55,22 @@ filler_gap_dependency: 68.50
             run_metadata("bl10m-d512L32-attnres8-offdev-s1339"),
             ("attnres", 1339),
         )
+
+    def test_rejects_incomplete_blimp_predictions(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp) / "predictions.json"
+            path.write_text('{"one_task": {"predictions": [{"id": "only_item"}]}}')
+            with self.assertRaisesRegex(RuntimeError, "67 BLiMP task"):
+                validate_blimp_predictions(path)
+
+    def test_source_host_comes_from_series_root_parent(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            host_root = Path(tmp) / "vast2_3090" / "series"
+            plan = host_root / "run" / "plan.json"
+            self.assertEqual(
+                source_host_for_plan(plan, [host_root]),
+                "vast2_3090",
+            )
 
 
 if __name__ == "__main__":
