@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -395,6 +396,10 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--eval-python")
     parser.add_argument("--device", default="cuda")
     parser.add_argument("--corpus", choices=("legacy", "10m", "100m"), default="legacy")
+    parser.add_argument(
+        "--identity-suffix",
+        help="append a safe suffix to result/output identities without changing source paths",
+    )
     parser.add_argument("--min-words-m", type=int)
     parser.add_argument("--max-words-m", type=int)
     final_group = parser.add_mutually_exclusive_group()
@@ -441,6 +446,12 @@ def main() -> None:
     args.full_dev_loss = args.full_dev_loss.resolve()
     args.converter = args.converter.resolve()
     manifest = load_json(args.run_dir / "checkpoint_manifest.json")
+    if args.identity_suffix:
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", args.identity_suffix):
+            raise SystemExit("--identity-suffix contains unsafe characters")
+        manifest = dict(manifest)
+        source_name = manifest.get("run_name") or args.run_dir.name
+        manifest["run_name"] = f"{source_name}--{args.identity_suffix}"
     checkpoint_labels = checkpoint_labels_for_args(args)
     full_plan = diagnosis_plan(args.run_dir, manifest, checkpoint_labels)
     plan = full_plan
