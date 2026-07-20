@@ -136,6 +136,33 @@ def provenance_fields(manifest: dict, manifest_path: Path) -> dict:
     }
 
 
+def attach_physical_evidence(
+    inventory_rows: list[dict], dev_rows: list[dict], allow_incomplete: bool
+) -> None:
+    dev_evidence = {
+        (row["run_name"], row["checkpoint_label"]): row
+        for row in dev_rows
+    }
+    for row in inventory_rows:
+        evidence = dev_evidence.get((row["run_name"], row["checkpoint_label"]))
+        if evidence:
+            checkpoint_hash = evidence["checkpoint_sha256"]
+            if row["sha256"] and row["sha256"] != checkpoint_hash:
+                raise RuntimeError(
+                    f"manifest/dev checkpoint hash mismatch for {row['run_name']} "
+                    f"{row['checkpoint_label']}"
+                )
+            if row["val_bin_sha256"] != evidence["val_bin_sha256"]:
+                raise RuntimeError(
+                    f"training/eval val.bin hash mismatch for {row['run_name']} "
+                    f"{row['checkpoint_label']}"
+                )
+            row["sha256"] = checkpoint_hash
+            row["physical_verified"] = 1
+    if not allow_incomplete and any(not row["sha256"] for row in inventory_rows):
+        raise RuntimeError("strict supplement inventory contains an unhashed checkpoint")
+
+
 def find_model_dir(roots: list[Path], model_name: str, required: bool) -> Path | None:
     candidates = model_dirs(roots, model_name)
     if len(candidates) > 1:
@@ -453,17 +480,7 @@ def main() -> None:
         str(row.get("mask_seed", "")), row["task"], row["level"], row["term"],
     ))
     if args.supplement:
-        hashes = {
-            (row["run_name"], row["checkpoint_label"]): row["checkpoint_sha256"]
-            for row in dev_rows
-        }
-        for row in inventory_rows:
-            checkpoint_hash = hashes.get((row["run_name"], row["checkpoint_label"]))
-            if checkpoint_hash:
-                row["sha256"] = checkpoint_hash
-                row["physical_verified"] = 1
-        if not args.allow_incomplete and any(not row["sha256"] for row in inventory_rows):
-            raise RuntimeError("strict supplement inventory contains an unhashed checkpoint")
+        attach_physical_evidence(inventory_rows, dev_rows, args.allow_incomplete)
 
     prefix = "diag_supp_" if args.supplement else "diag_"
     inventory_fields = (

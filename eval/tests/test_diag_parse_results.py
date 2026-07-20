@@ -11,6 +11,7 @@ ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "eval"))
 
 from diag_parse_results import (  # noqa: E402
+    attach_physical_evidence,
     parse_accuracy_report,
     provenance_fields,
     provenance_index,
@@ -95,6 +96,18 @@ filler_gap_dependency: 68.50
             self.assertEqual(fields["source_git_dirty"], True)
             self.assertEqual(fields["source_gpu"], "A100")
             self.assertEqual(fields["val_bin_sha256"], "valhash")
+
+    def test_physical_evidence_rejects_training_eval_fingerprint_mismatch(self):
+        inventory = [{
+            "run_name": "run", "checkpoint_label": "10M", "sha256": "",
+            "val_bin_sha256": "training-val", "physical_verified": 0,
+        }]
+        dev = [{
+            "run_name": "run", "checkpoint_label": "10M",
+            "checkpoint_sha256": "checkpoint", "val_bin_sha256": "eval-val",
+        }]
+        with self.assertRaisesRegex(RuntimeError, "training/eval val.bin hash mismatch"):
+            attach_physical_evidence(inventory, dev, allow_incomplete=False)
 
 
 if __name__ == "__main__":
