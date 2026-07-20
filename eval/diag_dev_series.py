@@ -13,6 +13,7 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 
@@ -350,6 +351,15 @@ def run_blimp(args, item: dict) -> None:
     )
     if not blimp_complete(args.eval_root, model_name):
         raise RuntimeError(f"BLiMP did not produce both report and predictions: {model_name}")
+    if args.delete_conversion_after_blimp:
+        resolved_model = local_model.resolve()
+        resolved_cache = args.cache_root.resolve()
+        if resolved_model.parent != resolved_cache:
+            raise RuntimeError(
+                f"refusing to remove conversion outside one-level cache: {resolved_model}"
+            )
+        shutil.rmtree(resolved_model)
+        print(f"removed validated conversion cache: {resolved_model}", flush=True)
 
 
 def parse_args() -> argparse.Namespace:
@@ -384,6 +394,11 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--label", action="append", choices=ALL_LABELS, dest="labels")
     parser.add_argument("--skip-dev", action="store_true")
     parser.add_argument("--skip-blimp", action="store_true")
+    parser.add_argument(
+        "--delete-conversion-after-blimp",
+        action="store_true",
+        help="remove each generated HF conversion only after report + predictions validate",
+    )
     parser.add_argument("--resume", action="store_true")
     parser.add_argument("--plan-only", action="store_true")
     parser.add_argument(
