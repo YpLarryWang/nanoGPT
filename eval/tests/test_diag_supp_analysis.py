@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import sys
+import tempfile
 import unittest
 from pathlib import Path
 
@@ -8,7 +9,13 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(ROOT / "eval"))
 
-from diag_supp_analysis import MASK_SEEDS, SEEDS, longest_positive_window, masking_tables  # noqa: E402
+from diag_supp_analysis import (  # noqa: E402
+    MASK_SEEDS,
+    SEEDS,
+    dashboard_status,
+    longest_positive_window,
+    masking_tables,
+)
 
 
 def behavior_row(seed, architecture, mode, term, accuracy, mask_seed=""):
@@ -66,6 +73,43 @@ class DiagnosisSupplementAnalysisTest(unittest.TestCase):
         self.assertAlmostEqual(seed_row["old_specific_excess_cost_pp"], 2.0)
         self.assertEqual(len(correlations), 2)
         self.assertTrue(all(row["n_terms"] == 13 for row in correlations))
+
+    def test_dashboard_d_uses_frozen_eighteen_artifact_contract(self):
+        required_tables = (
+            "diag_supp_checkpoint_inventory.csv",
+            "diag_supp_behavior_long.csv",
+            "diag_supp_dev_loss.csv",
+            "diag_supp_trajectory_summary.csv",
+            "diag_supp_masking_draws.csv",
+            "diag_supp_masking_contrasts.csv",
+            "diag_supp_100m_fresh_summary.csv",
+            "diag_supp_replay_quality.csv",
+        )
+        required_figures = (
+            "real_figA_dense_10m.png", "real_figA_dense_10m.svg",
+            "real_figB_excess_cost.png", "real_figB_excess_cost.svg",
+            "real_figB_raw_appendix.png", "real_figB_raw_appendix.svg",
+            "real_figC_position_loss.png", "real_figC_position_loss.svg",
+            "real_figD_100m_fresh.png", "real_figD_100m_fresh.svg",
+        )
+        with tempfile.TemporaryDirectory() as temp:
+            output_dir = Path(temp) / "tables"
+            figure_dir = Path(temp) / "figures"
+            output_dir.mkdir()
+            figure_dir.mkdir()
+            for name in required_tables:
+                (output_dir / name).touch()
+            for name in required_figures:
+                (figure_dir / name).touch()
+
+            status = dashboard_status([], [], output_dir, figure_dir, "yellow")
+
+        child = next(
+            row for row in status["children"] if row["id"] == "diagnosis-supp-d-figures"
+        )
+        self.assertEqual(child["artifact_progress"], 18)
+        self.assertEqual(child["artifact_total"], 18)
+        self.assertEqual(child["status"], "complete")
 
 
 if __name__ == "__main__":

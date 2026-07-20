@@ -509,8 +509,10 @@ def dashboard_status(
         "real_figD_100m_fresh.png", "real_figD_100m_fresh.svg",
     ]
     required_tables = [
+        "diag_supp_checkpoint_inventory.csv", "diag_supp_behavior_long.csv",
+        "diag_supp_dev_loss.csv",
         "diag_supp_trajectory_summary.csv", "diag_supp_masking_draws.csv",
-        "diag_supp_masking_contrasts.csv", "diag_supp_masking_correlations.csv",
+        "diag_supp_masking_contrasts.csv",
         "diag_supp_100m_fresh_summary.csv", "diag_supp_replay_quality.csv",
     ]
     artifacts = sum((figure_dir / name).is_file() for name in required_figures)
