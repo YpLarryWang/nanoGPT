@@ -1,13 +1,20 @@
 #!/usr/bin/env bash
-# Convert one final AttnRes checkpoint and run the three frozen Pick-B tasks.
+# Convert one final AttnRes checkpoint and run frozen masking-control tasks.
 
 set -euo pipefail
 
-VARIANT="${1:?usage: diag_masked_zero_shot.sh <variant> <none|old|embed|random_count_matched>}"
-MODE="${2:?usage: diag_masked_zero_shot.sh <variant> <none|old|embed|random_count_matched>}"
+USAGE='usage: diag_masked_zero_shot.sh <variant> <none|old|embed|random_count_matched> [mask_seed] [all|blimp]'
+VARIANT="${1:?$USAGE}"
+MODE="${2:?$USAGE}"
+MASK_SEED_ARG="${3:-}"
+TASK_SELECTOR="${4:-all}"
 case "$MODE" in
   none|old|embed|random_count_matched) ;;
   *) echo "invalid mask mode: $MODE" >&2; exit 2 ;;
+esac
+case "$TASK_SELECTOR" in
+  all|blimp) ;;
+  *) echo "invalid task selector: $TASK_SELECTOR" >&2; exit 2 ;;
 esac
 case "$VARIANT" in
   *attnres*) ;;
@@ -21,7 +28,19 @@ REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 : "${EVAL_PY:=$DATA/envs/babylm-eval/bin/python}"
 : "${HF_ROOT:=$DATA/hf-models-diag}"
 : "${RESUME:=0}"
-MASK_SEED=20260718
+if [[ "$MODE" == random_count_matched ]]; then
+  MASK_SEED="${MASK_SEED_ARG:-${MASK_SEED:-}}"
+  [[ "$MASK_SEED" =~ ^[0-9]+$ ]] || {
+    echo "random_count_matched requires an explicit numeric mask_seed" >&2
+    exit 2
+  }
+else
+  [[ -z "$MASK_SEED_ARG" ]] || {
+    echo "mask_seed is only valid for random_count_matched" >&2
+    exit 2
+  }
+  : "${MASK_SEED:=20260718}"
+fi
 
 [[ "$RESUME" == 0 || "$RESUME" == 1 ]] || { echo "RESUME must be 0 or 1" >&2; exit 2; }
 [[ -x "$EVAL_PY" ]] || { echo "missing eval Python: $EVAL_PY" >&2; exit 1; }
@@ -46,8 +65,18 @@ case "$VARIANT" in
 esac
 [[ -f "$TOK" ]] || { echo "missing tokenizer: $TOK" >&2; exit 1; }
 
-RESULT_NAME="${VARIANT}--mask${MODE}"
-HFDIR="$HF_ROOT/$RESULT_NAME"
+if [[ "$MODE" == random_count_matched && "$MASK_SEED" != 20260718 ]]; then
+  RESULT_NAME="${VARIANT}--mask${MODE}-seed${MASK_SEED}"
+else
+  # The validated legacy random draw is intentionally left at its unsuffixed
+  # identity and is explicitly interpreted as mask_seed=20260718 by the parser.
+  RESULT_NAME="${VARIANT}--mask${MODE}"
+fi
+if [[ "$MODE" == random_count_matched ]]; then
+  HFDIR="$HF_ROOT/${VARIANT}--maskrandom_count_matched"
+else
+  HFDIR="$HF_ROOT/$RESULT_NAME"
+fi
 if [[ ! -f "$HFDIR/checkpoint_source.json" ]]; then
   [[ ! -e "$HFDIR" ]] || { echo "incomplete HF export exists: $HFDIR" >&2; exit 1; }
   "$EVAL_PY" "$NANO_REPO/eval/convert_nanogpt_to_hf.py" \
@@ -98,7 +127,14 @@ print(temperature + "\n" + average)
 ' "$1"
 }
 
-for task in blimp entity_tracking comps; do
+TASKS=(blimp entity_tracking comps)
+if [[ "$TASK_SELECTOR" == blimp ]]; then TASKS=(blimp); fi
+if [[ "$MODE" == random_count_matched && "$MASK_SEED" != 20260718 && "$TASK_SELECTOR" != blimp ]]; then
+  echo "supplementary random draws are BLiMP-only; pass task selector 'blimp'" >&2
+  exit 2
+fi
+
+for task in "${TASKS[@]}"; do
   if task_complete "$task"; then
     if [[ "$RESUME" == 1 ]]; then
       echo ">> $task complete; skipping"
@@ -133,7 +169,11 @@ runpy.run_module("evaluation_pipeline.sentence_zero_shot.run", run_name="__main_
 done
 
 if [[ "$MODE" == none ]]; then
-  for task in blimp entity_tracking comps; do
+  [[ "$TASK_SELECTOR" == all ]] || {
+    echo "none parity requires task selector 'all'" >&2
+    exit 2
+  }
+  for task in "${TASKS[@]}"; do
     leaf="$(task_leaf "$task")"
     original="$EVAL_REPO/results/$VARIANT/main/zero_shot/causal/$task/$leaf"
     diagnostic="$EVAL_REPO/results/$RESULT_NAME/main/zero_shot/causal/$task/$leaf"

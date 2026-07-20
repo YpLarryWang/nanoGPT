@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run the frozen six-point L32 diagnosis grid without retraining.
+"""Run a manifest-selected L32 diagnosis checkpoint series without retraining.
 
 The driver itself uses only the standard library. It invokes native
 ``full_dev_loss.py`` with the training environment and BLiMP conversion/scoring
@@ -9,6 +9,7 @@ with the separately pinned BabyLM evaluation environment.
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -17,7 +18,27 @@ import sys
 
 
 CHECKPOINT_LABELS = ("1M", "5M", "10M", "20M", "50M", "final")
-MILESTONE_NAMES = {label: f"words_{label}" for label in CHECKPOINT_LABELS[:-1]}
+DENSE_10M_LABELS = tuple(
+    [f"{value}M" for value in range(1, 11)]
+    + [f"{value}M" for value in range(20, 100, 10)]
+    + ["final"]
+)
+FRESH_100M_LABELS = tuple(f"{value}M" for value in range(10, 100, 10))
+ALL_LABELS = tuple(dict.fromkeys(CHECKPOINT_LABELS + DENSE_10M_LABELS + FRESH_100M_LABELS))
+OFFICIAL_FINGERPRINTS = {
+    "10m": {
+        "train.bin": "63871a140cb32e170d848ca8f13be39801ddf6d50809bb4d997510e99a7eeb10",
+        "val.bin": "c7e638f3e7c5afbce3503e09d9ddd46565a1a43d27fb46761c8216b747f05007",
+        "train.word_starts.uint8": "00c60607cdc98bb097e964feeb9dfe03240e479f068438098fbf930bb43d10fa",
+        "tokenizer": "8c877bb7243db5669f68a9bbbf0c46ca56fb02edd2d43520aac978aa1f35a873",
+    },
+    "100m": {
+        "train.bin": "8b3f3e41b28ab3cfde1fe8f1c095c662ece3332f081d1e70698a279d0e1a6853",
+        "val.bin": "d078706863afbcf3b35a6d1e7f5f571eab99c7ac52bda8fbe2c6a0fbe4ad2fa8",
+        "train.word_starts.uint8": "527618341da23d9858ebffdca116edddb577ab239c7332df94b24075436ca1bb",
+        "tokenizer": "f13720328807e761dc92192111d89ece0119987875f890f3665eba477b5d727c",
+    },
+}
 
 
 def load_json(path: Path) -> dict:
@@ -28,8 +49,20 @@ def load_json(path: Path) -> dict:
     return payload
 
 
-def diagnosis_plan(run_dir: Path, manifest: dict) -> list[dict]:
-    """Select the five named word milestones plus the physical final role."""
+def diagnosis_plan(
+    run_dir: Path,
+    manifest: dict,
+    checkpoint_labels: tuple[str, ...] = CHECKPOINT_LABELS,
+) -> list[dict]:
+    """Select named word-series milestones plus the physical final role, if requested."""
+    if not checkpoint_labels or len(set(checkpoint_labels)) != len(checkpoint_labels):
+        raise ValueError("checkpoint labels must be non-empty and unique")
+    invalid = [label for label in checkpoint_labels if label not in ALL_LABELS]
+    if invalid:
+        raise ValueError(f"unsupported checkpoint labels: {invalid}")
+    milestone_names = {
+        label: f"words_{label}" for label in checkpoint_labels if label != "final"
+    }
     checkpoints = manifest.get("checkpoints", [])
     selected: dict[str, dict] = {}
     for entry in checkpoints:
@@ -40,34 +73,35 @@ def diagnosis_plan(run_dir: Path, manifest: dict) -> list[dict]:
             for label in entry.get("labels", [])
             if label.get("series") == "words"
         }
-        for short_label, manifest_name in MILESTONE_NAMES.items():
+        for short_label, manifest_name in milestone_names.items():
             if manifest_name not in names:
                 continue
             if short_label in selected:
                 raise ValueError(f"duplicate milestone label {manifest_name!r}")
             selected[short_label] = entry
 
-    final_path = manifest.get("roles", {}).get("final")
-    if not final_path:
-        raise ValueError("manifest is missing roles.final")
-    final_entries = [
-        entry
-        for entry in checkpoints
-        if entry.get("role") == "final" and entry.get("path") == final_path
-    ]
-    if len(final_entries) != 1:
-        raise ValueError(
-            f"expected one physical final entry for {final_path!r}, got {len(final_entries)}"
-        )
-    selected["final"] = final_entries[0]
+    if "final" in checkpoint_labels:
+        final_path = manifest.get("roles", {}).get("final")
+        if not final_path:
+            raise ValueError("manifest is missing roles.final")
+        final_entries = [
+            entry
+            for entry in checkpoints
+            if entry.get("role") == "final" and entry.get("path") == final_path
+        ]
+        if len(final_entries) != 1:
+            raise ValueError(
+                f"expected one physical final entry for {final_path!r}, got {len(final_entries)}"
+            )
+        selected["final"] = final_entries[0]
 
-    missing = [label for label in CHECKPOINT_LABELS if label not in selected]
+    missing = [label for label in checkpoint_labels if label not in selected]
     if missing:
         raise ValueError(f"manifest is missing diagnosis checkpoints: {missing}")
 
     run_name = manifest.get("run_name") or run_dir.name
     plan = []
-    for label in CHECKPOINT_LABELS:
+    for label in checkpoint_labels:
         entry = selected[label]
         source = run_dir / entry["path"]
         plan.append(
@@ -87,6 +121,58 @@ def diagnosis_plan(run_dir: Path, manifest: dict) -> list[dict]:
             }
         )
     return plan
+
+
+def checkpoint_labels_for_args(args: argparse.Namespace) -> tuple[str, ...]:
+    if args.corpus == "legacy":
+        labels = CHECKPOINT_LABELS
+    elif args.corpus == "10m":
+        labels = DENSE_10M_LABELS
+    else:
+        labels = FRESH_100M_LABELS
+    if args.min_words_m is not None:
+        labels = tuple(
+            label for label in labels
+            if label == "final" or int(label[:-1]) >= args.min_words_m
+        )
+    if args.max_words_m is not None:
+        labels = tuple(
+            label for label in labels
+            if label == "final" or int(label[:-1]) <= args.max_words_m
+        )
+    if args.include_final is True and "final" not in labels:
+        labels += ("final",)
+    elif args.include_final is False:
+        labels = tuple(label for label in labels if label != "final")
+    return labels
+
+
+def sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8 * 1024 * 1024), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def assert_official_fingerprints(corpus: str, data_dir: Path, tokenizer: Path) -> None:
+    if corpus == "legacy":
+        return
+    expected = OFFICIAL_FINGERPRINTS[corpus]
+    paths = {
+        "train.bin": data_dir / "train.bin",
+        "val.bin": data_dir / "val.bin",
+        "train.word_starts.uint8": data_dir / "train.word_starts.uint8",
+        "tokenizer": tokenizer,
+    }
+    for label, path in paths.items():
+        if not path.is_file():
+            raise FileNotFoundError(path)
+        actual = sha256(path)
+        if actual != expected[label]:
+            raise RuntimeError(
+                f"{corpus} official fingerprint mismatch for {label}: {actual} != {expected[label]}"
+            )
 
 
 def blimp_paths(eval_root: Path, model_name: str) -> tuple[Path, Path]:
@@ -277,6 +363,13 @@ def parse_args() -> argparse.Namespace:
     parser.add_argument("--native-python", default=sys.executable)
     parser.add_argument("--eval-python")
     parser.add_argument("--device", default="cuda")
+    parser.add_argument("--corpus", choices=("legacy", "10m", "100m"), default="legacy")
+    parser.add_argument("--min-words-m", type=int)
+    parser.add_argument("--max-words-m", type=int)
+    final_group = parser.add_mutually_exclusive_group()
+    final_group.add_argument("--include-final", action="store_true", dest="include_final")
+    final_group.add_argument("--no-include-final", action="store_false", dest="include_final")
+    parser.set_defaults(include_final=None)
     parser.add_argument(
         "--dev-dtype",
         default="auto",
@@ -288,7 +381,7 @@ def parse_args() -> argparse.Namespace:
         choices=("float32", "float16", "bfloat16"),
     )
     parser.add_argument("--batch-size", type=int)
-    parser.add_argument("--label", action="append", choices=CHECKPOINT_LABELS, dest="labels")
+    parser.add_argument("--label", action="append", choices=ALL_LABELS, dest="labels")
     parser.add_argument("--skip-dev", action="store_true")
     parser.add_argument("--skip-blimp", action="store_true")
     parser.add_argument("--resume", action="store_true")
@@ -312,7 +405,8 @@ def main() -> None:
     args.full_dev_loss = args.full_dev_loss.resolve()
     args.converter = args.converter.resolve()
     manifest = load_json(args.run_dir / "checkpoint_manifest.json")
-    full_plan = diagnosis_plan(args.run_dir, manifest)
+    checkpoint_labels = checkpoint_labels_for_args(args)
+    full_plan = diagnosis_plan(args.run_dir, manifest, checkpoint_labels)
     plan = full_plan
     if args.labels:
         wanted = set(args.labels)
@@ -341,6 +435,7 @@ def main() -> None:
     args.tokenizer = args.tokenizer.resolve()
     args.output_root = args.output_root.resolve()
     args.cache_root = args.cache_root.resolve()
+    assert_official_fingerprints(args.corpus, args.data_dir, args.tokenizer)
     run_output = args.output_root / run_name
     write_plan(run_output / "plan.json", full_plan, args.resume)
     for index, item in enumerate(plan, start=1):

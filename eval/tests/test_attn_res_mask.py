@@ -95,6 +95,31 @@ class AttnResMaskTest(unittest.TestCase):
         self.assertTrue(bool(random_a[0]))
         self.assertTrue(bool(random_a[-1]))
 
+    def test_five_control_seeds_preserve_counts_and_change_some_sites(self):
+        signatures = []
+        for seed in (20260718, 20260719, 20260720, 20260721, 20260722):
+            site_masks = []
+            for layer_idx, router_site, block_start in (
+                (7, "q1", False),
+                (12, "q2", True),
+                (19, "q1", True),
+            ):
+                kwargs = dict(
+                    num_blocks=10,
+                    layer_idx=layer_idx,
+                    router_site=router_site,
+                    block_start=block_start,
+                    control_seed=seed,
+                )
+                old = hf_model.build_attn_res_keep_mask(mode="old", **kwargs)
+                random = hf_model.build_attn_res_keep_mask(
+                    mode="random_count_matched", **kwargs
+                )
+                self.assertEqual(int((~random).sum()), int((~old).sum()))
+                site_masks.append(tuple(random.tolist()))
+            signatures.append(tuple(site_masks))
+        self.assertGreater(len(set(signatures)), 1)
+
     def test_masked_mix_zeroes_forbidden_sources_and_renormalizes(self):
         sources = [torch.full((1, 1, 2), float(i)) for i in range(4)]
         keep = torch.tensor([True, False, True, False])

@@ -17,6 +17,7 @@ TASK_LEAVES = {
 }
 EXPECTED_BLIMP_TERMS = 13
 DEFAULT_MASK_MODES = ("old", "embed", "random_count_matched")
+MASK_SEEDS = (20260718, 20260719, 20260720, 20260721, 20260722)
 
 
 def load_json(path: Path) -> dict:
@@ -108,6 +109,8 @@ def add_task_rows(
     words_seen: int,
     mask_mode: str,
     task: str,
+    mask_seed: int | None = None,
+    corpus: str | None = None,
 ) -> None:
     report, predictions = task_artifacts(model_dir, task)
     if not report.is_file() or not predictions.is_file():
@@ -123,8 +126,7 @@ def add_task_rows(
             )
     architecture, seed = run_metadata(run_name)
     for row in parsed:
-        output.append(
-            {
+        output_row = {
                 "run_name": run_name,
                 "architecture": architecture,
                 "seed": seed,
@@ -136,7 +138,10 @@ def add_task_rows(
                 **row,
                 "report_path": str(report),
             }
-        )
+        if mask_seed is not None or corpus is not None:
+            output_row["mask_seed"] = "" if mask_seed is None else mask_seed
+            output_row["corpus"] = corpus or ""
+        output.append(output_row)
 
 
 def read_position_rows(path: Path) -> list[dict]:
@@ -178,6 +183,11 @@ def parse_args() -> argparse.Namespace:
         action="store_true",
         help="collate available artifacts without requiring all dev/mask outputs",
     )
+    parser.add_argument(
+        "--supplement",
+        action="store_true",
+        help="parse the 19-point/9-point supplement and five random mask draws",
+    )
     return parser.parse_args()
 
 
@@ -198,9 +208,14 @@ def main() -> None:
     plans: dict[str, list[dict]] = {}
     for plan_path in plan_paths:
         plan = load_json(plan_path).get("checkpoints")
-        if not isinstance(plan, list) or len(plan) != 6:
-            raise ValueError(f"expected six checkpoints in {plan_path}")
-        run_name = plan[0]["run_name"]
+        run_name = plan[0]["run_name"] if isinstance(plan, list) and plan else ""
+        corpus = "100m" if run_name.startswith("bl100m-") else "10m"
+        expected_plan_size = 9 if corpus == "100m" else (19 if args.supplement else 6)
+        if not isinstance(plan, list) or len(plan) != expected_plan_size:
+            raise ValueError(
+                f"expected {expected_plan_size} checkpoints in {plan_path}, got "
+                f"{len(plan) if isinstance(plan, list) else type(plan).__name__}"
+            )
         if run_name in plans:
             raise ValueError(f"duplicate series plan for {run_name}")
         plans[run_name] = plan
@@ -215,6 +230,7 @@ def main() -> None:
                     )},
                     "architecture": architecture,
                     "seed": seed,
+                    **({"corpus": corpus} if args.supplement else {}),
                 }
             )
             checkpoint_dir = plan_path.parent / item["checkpoint_label"]
@@ -272,6 +288,7 @@ def main() -> None:
                     words_seen=item["words_seen"],
                     mask_mode="none",
                     task="blimp",
+                    corpus=corpus if args.supplement else None,
                 )
                 if item["checkpoint_label"] == "final":
                     for task in ("comps", "entity_tracking"):
@@ -284,30 +301,47 @@ def main() -> None:
                             words_seen=item["words_seen"],
                             mask_mode="none",
                             task=task,
+                            corpus=corpus if args.supplement else None,
                         )
 
     for run_name, plan in plans.items():
-        if "attnres" not in run_name:
+        if "attnres" not in run_name or not any(
+            item["checkpoint_label"] == "final" for item in plan
+        ):
             continue
         final = next(item for item in plan if item["checkpoint_label"] == "final")
         for mode in mask_modes:
-            model_name = f"{run_name}--mask{mode}"
-            model_dir = find_model_dir(
-                eval_roots, model_name, required=not args.allow_incomplete
-            )
-            if model_dir is None:
-                continue
-            for task in TASK_LEAVES:
-                add_task_rows(
-                    behavior_rows,
-                    model_dir=model_dir,
-                    run_name=run_name,
-                    checkpoint_label="final",
-                    iter_num=final["iter_num"],
-                    words_seen=final["words_seen"],
-                    mask_mode=mode,
-                    task=task,
+            seeds = MASK_SEEDS if args.supplement and mode == "random_count_matched" else (None,)
+            for mask_seed in seeds:
+                if mode == "random_count_matched" and mask_seed not in (None, 20260718):
+                    model_name = f"{run_name}--mask{mode}-seed{mask_seed}"
+                    tasks = ("blimp",)
+                else:
+                    model_name = f"{run_name}--mask{mode}"
+                    tasks = tuple(TASK_LEAVES)
+                model_dir = find_model_dir(
+                    eval_roots, model_name, required=not args.allow_incomplete
                 )
+                if model_dir is None:
+                    continue
+                for task in tasks:
+                    add_task_rows(
+                        behavior_rows,
+                        model_dir=model_dir,
+                        run_name=run_name,
+                        checkpoint_label="final",
+                        iter_num=final["iter_num"],
+                        words_seen=final["words_seen"],
+                        mask_mode=mode,
+                        task=task,
+                        mask_seed=(
+                            20260718
+                            if args.supplement and mode == "random_count_matched"
+                            and mask_seed is None
+                            else mask_seed
+                        ),
+                        corpus="10m" if args.supplement else None,
+                    )
 
     inventory_rows.sort(key=lambda row: (row["seed"], row["architecture"], row["iter_num"]))
     dev_rows.sort(key=lambda row: (row["seed"], row["architecture"], row["iter_num"]))
@@ -316,24 +350,33 @@ def main() -> None:
     ))
     behavior_rows.sort(key=lambda row: (
         row["seed"], row["architecture"], row["iter_num"], row["mask_mode"],
-        row["task"], row["level"], row["term"],
+        str(row.get("mask_seed", "")), row["task"], row["level"], row["term"],
     ))
 
-    write_csv_exclusive(output_dir / "diag_checkpoint_inventory.csv", inventory_rows, (
+    prefix = "diag_supp_" if args.supplement else "diag_"
+    inventory_fields = (
         "run_name", "architecture", "seed", "checkpoint_label", "checkpoint_path",
         "checkpoint_filename", "checkpoint_role", "iter_num", "tokens_seen", "words_seen",
         "sha256", "blimp_model_name",
-    ))
-    write_csv_exclusive(output_dir / "diag_behavior_long.csv", behavior_rows, (
+    )
+    behavior_fields = (
         "run_name", "architecture", "seed", "checkpoint_label", "iter_num", "words_seen",
         "mask_mode", "task", "level", "term", "accuracy", "report_path",
-    ))
-    write_csv_exclusive(output_dir / "diag_dev_loss.csv", dev_rows, (
+    )
+    if args.supplement:
+        inventory_fields = inventory_fields[:3] + ("corpus",) + inventory_fields[3:]
+        behavior_fields = behavior_fields[:3] + ("corpus",) + behavior_fields[3:6] + (
+            "mask_seed",
+        ) + behavior_fields[6:]
+
+    write_csv_exclusive(output_dir / f"{prefix}checkpoint_inventory.csv", inventory_rows, inventory_fields)
+    write_csv_exclusive(output_dir / f"{prefix}behavior_long.csv", behavior_rows, behavior_fields)
+    write_csv_exclusive(output_dir / f"{prefix}dev_loss.csv", dev_rows, (
         "run_name", "architecture", "seed", "checkpoint_label", "checkpoint_role",
         "iter_num", "tokens_seen", "words_seen", "mean_nll", "scored_tokens",
         "val_bin_sha256", "checkpoint_sha256", "source_json",
     ))
-    write_csv_exclusive(output_dir / "diag_position_nll.csv", position_rows, (
+    write_csv_exclusive(output_dir / f"{prefix}position_nll.csv", position_rows, (
         "run_name", "architecture", "seed", "checkpoint_label", "iter_num", "words_seen",
         "loss_index", "context_length", "nll_sum", "token_count", "mean_nll",
     ))
