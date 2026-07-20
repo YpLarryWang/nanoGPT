@@ -482,7 +482,12 @@ def render_figure_d(plotting: dict, output: Path) -> None:
 
 
 def dashboard_status(
-    behavior: list[dict], dev: list[dict], output_dir: Path, figure_dir: Path, replay_grade: str
+    behavior: list[dict],
+    dev: list[dict],
+    output_dir: Path,
+    figure_dir: Path,
+    replay_grade: str,
+    input_dir: Path | None = None,
 ) -> dict:
     a_blimp = {
         (row["run_name"], row["checkpoint_label"])
@@ -508,16 +513,22 @@ def dashboard_status(
         "real_figC_position_loss.png", "real_figC_position_loss.svg",
         "real_figD_100m_fresh.png", "real_figD_100m_fresh.svg",
     ]
-    required_tables = [
+    required_input_tables = [
         "diag_supp_checkpoint_inventory.csv", "diag_supp_behavior_long.csv",
         "diag_supp_dev_loss.csv",
+    ]
+    required_output_tables = [
         "diag_supp_trajectory_summary.csv", "diag_supp_masking_draws.csv",
         "diag_supp_masking_contrasts.csv",
         "diag_supp_100m_fresh_summary.csv", "diag_supp_replay_quality.csv",
     ]
+    input_dir = input_dir or output_dir
     artifacts = sum((figure_dir / name).is_file() for name in required_figures)
-    artifacts += sum((output_dir / name).is_file() for name in required_tables)
-    artifact_total = len(required_figures) + len(required_tables)
+    artifacts += sum((input_dir / name).is_file() for name in required_input_tables)
+    artifacts += sum((output_dir / name).is_file() for name in required_output_tables)
+    artifact_total = (
+        len(required_figures) + len(required_input_tables) + len(required_output_tables)
+    )
     children = [
         {"id": "diagnosis-supp-a-dense-10m", "label": "A — 10M dense trajectory",
          "blimp_progress": len(a_blimp), "blimp_total": 114,
@@ -608,7 +619,8 @@ def main() -> None:
         )
     render_figure_d(plotting_d, args.figure_dir / "real_figD_100m_fresh")
     status = dashboard_status(
-        behavior, dev, args.output_dir, args.figure_dir, args.replay_grade
+        behavior, dev, args.output_dir, args.figure_dir, args.replay_grade,
+        input_dir=args.input_dir,
     )
     status_path = args.output_dir / "diag_supp_dashboard_status.json"
     if status_path.exists():

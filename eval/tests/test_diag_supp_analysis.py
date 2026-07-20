@@ -93,16 +93,22 @@ class DiagnosisSupplementAnalysisTest(unittest.TestCase):
             "real_figD_100m_fresh.png", "real_figD_100m_fresh.svg",
         )
         with tempfile.TemporaryDirectory() as temp:
+            input_dir = Path(temp) / "parsed"
             output_dir = Path(temp) / "tables"
             figure_dir = Path(temp) / "figures"
+            input_dir.mkdir()
             output_dir.mkdir()
             figure_dir.mkdir()
-            for name in required_tables:
+            for name in required_tables[:3]:
+                (input_dir / name).touch()
+            for name in required_tables[3:]:
                 (output_dir / name).touch()
             for name in required_figures:
                 (figure_dir / name).touch()
 
-            status = dashboard_status([], [], output_dir, figure_dir, "yellow")
+            status = dashboard_status(
+                [], [], output_dir, figure_dir, "yellow", input_dir=input_dir
+            )
 
         child = next(
             row for row in status["children"] if row["id"] == "diagnosis-supp-d-figures"
