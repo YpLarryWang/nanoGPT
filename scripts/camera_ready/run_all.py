@@ -33,6 +33,12 @@ def main():
  env=dict(os.environ,CUDA_VISIBLE_DEVICES='0',OMP_NUM_THREADS='4',TORCHINDUCTOR_COMPILE_THREADS='4')
  for repeat,order in enumerate([['baseline','static','dynamic'],['static','dynamic','baseline'],['dynamic','baseline','static']]):
   for arm in order:
+   existing=Path(f'results/camera-ready/benchmark-{arm}-{repeat}.json')
+   if existing.exists():
+    record=json.loads(existing.read_text())
+    assert record['arm']==arm and len(record['seconds'])==20 and record['warmup']==10
+    print('Reusing completed benchmark',existing,flush=True)
+    continue
    call(['/workspace/envs/train/bin/python','scripts/camera_ready/benchmark.py','--arm',arm,'--warmup','10','--updates','20','--output',f'results/camera-ready/benchmark-{arm}-{repeat}.json'],f'logs/camera-ready/benchmark-{arm}-{repeat}.log',env)
  state('remaining_evaluation')
  paired(evaluate,([1337,1339],0,'remaining'),([1338],1,'remaining'))
