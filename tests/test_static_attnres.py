@@ -36,6 +36,13 @@ class StaticRoutingTest(unittest.TestCase):
         self.assertEqual(q.grad[2].item(),0)
         self.assertTrue(all(v.grad is not None for v in values))
 
+    def test_optimizer_step(self):
+        model=GPT(self.config(True)).train()
+        opt,=model.configure_optimizers(.1,6e-4,(.9,.95),"cpu",use_muon=False)
+        x=torch.randint(0,32,(2,8));_,loss=model(x,x)
+        loss.backward();opt.step();opt.zero_grad(set_to_none=True)
+        self.assertTrue(all(torch.isfinite(p).all() for p in model.parameters()))
+
     def test_hf_save_reload_and_logits(self):
         cfg=self.config(True); model=GPT(cfg).eval()
         hf=NanoGPTForCausalLM(NanoGPTConfig(**dataclasses.asdict(cfg))).eval()

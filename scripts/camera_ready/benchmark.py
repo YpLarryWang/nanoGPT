@@ -15,7 +15,7 @@ def main():
  cfg=GPTConfig(block_size=512,vocab_size=16000,n_layer=32,n_head=8,n_embd=512,
  dropout=.1,bias=False,use_rmsnorm=True,use_swiglu=True,use_rope=True,use_attn_gate=True,
  use_attn_res=a.arm!='baseline',use_static_attn_res=a.arm=='static',attn_res_block_size=8)
- raw=GPT(cfg).cuda().train();opt=raw.configure_optimizers(.1,6e-4,(.9,.95),'cuda')
+ raw=GPT(cfg).cuda().train();opt,=raw.configure_optimizers(.1,6e-4,(.9,.95),'cuda',use_muon=False)
  model=torch.compile(raw)
  x=torch.randint(0,16000,(8,512),device='cuda');y=torch.randint(0,16000,(8,512),device='cuda')
  def update():
