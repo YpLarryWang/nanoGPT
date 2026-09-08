@@ -180,6 +180,9 @@ if checkpoint_schedule:
             )
     config['checkpoint_schedule'] = checkpoint_schedule
     config['checkpoint_schedule_metadata'] = exposure_schedule.metadata.get('fingerprints', {})
+if endpoint_only:
+    save_iters_set.clear()
+    print("endpoint_only: retaining exposure schedule; saving only the final checkpoint")
 if save_iters_set:
     assert all(isinstance(i, int) and i >= 0 for i in save_iters_set), "save_iters: non-neg ints"
     assert max(save_iters_set) <= max_iters, "a save_iter exceeds max_iters"
