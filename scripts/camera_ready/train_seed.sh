@@ -20,7 +20,7 @@ mkdir -p logs/camera-ready results/camera-ready
  --dropout=0.1 --batch_size=8 --gradient_accumulation_steps=64 --seed="$SEED" \
  --eval_interval=50 --eval_iters=50 --eval_batch_size=32 \
  --checkpoint_schedule="$SCHEDULE" --endpoint_only=True \
- --wandb_log=True --wandb_project=babylm --wandb_run_name="$NAME" --out_dir="out-babylm/$NAME" \
+ --wandb_log=True --wandb_project=babylm --wandb_run_name="$NAME" --wandb_run_id="$NAME" --out_dir="out-babylm/$NAME" \
  > "logs/camera-ready/$NAME.train.log" 2>&1
 "$PY" - "$NAME" <<'PY'
 from pathlib import Path
