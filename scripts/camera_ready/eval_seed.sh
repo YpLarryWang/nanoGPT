@@ -17,7 +17,27 @@ PY
 OUT="$NANO/results/camera-ready/$NAME"
 HF="/workspace/hf-models/$NAME"
 mkdir -p "$OUT"
+# Permit early evaluation on a free GPU without overlapping the main queue.
+exec 8>"$NANO/results/camera-ready/eval-gpu-${GPU}.lock"
+flock 8
+exec 9>"$OUT/${PHASE}.lock"
+flock 9
 if [[ "$PHASE" == priority ]]; then
+ if [[ -f "$OUT/priority.done" ]]; then
+  "$PY" - "$OUT" "$EVAL" "$NAME" <<'PY'
+import json,sys
+from pathlib import Path
+sys.path.insert(0, 'eval')
+from sync_eval_results import parse_average_accuracy
+for split in ('dev','test'):
+ d=json.loads((Path(sys.argv[1])/f'full_{split}.json').read_text())
+ assert d['mean_nll'] > 0 and d['perplexity'] > 0
+p=Path(sys.argv[2])/'results'/sys.argv[3]/'main/zero_shot/causal/blimp/blimp_filtered/best_temperature_report.txt'
+assert 0 <= parse_average_accuracy(p) <= 100
+PY
+  echo "Reusing verified priority results: $NAME"
+  exit 0
+ fi
  for SPLIT in dev test; do
   if [[ ! -s "$OUT/full_$SPLIT.json" ]]; then
    "$TRAIN_PY" eval/full_dev_loss.py --checkpoint "$CKPT" --data-dir data/babylm_officialdev \
