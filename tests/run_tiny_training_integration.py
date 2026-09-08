@@ -112,6 +112,8 @@ def main() -> None:
                 "--sampler=shuffle",
                 "--always_save_checkpoint=False",
             ]
+            if "--endpoint-only" in sys.argv:
+                command += ["--endpoint_only=True", "--use_attn_res=True", "--use_static_attn_res=True", "--attn_res_block_size=2"]
             subprocess.run(command, cwd=ROOT, check=True)
 
             manifest = json.loads((out_dir / "checkpoint_manifest.json").read_text())
@@ -123,8 +125,12 @@ def main() -> None:
             assert final["tokens_seen"] == 32
             assert final["words_seen"] == 20
             assert not list(out_dir.glob("*i000003*"))
-            milestone = torch.load(out_dir / "ckpt_000001.pt", map_location="cpu", weights_only=False)
-            assert {label["series"] for label in milestone["checkpoint_labels"]} == {"words", "tokens"}
+            if "--endpoint-only" in sys.argv:
+                assert list(out_dir.glob("*.pt")) == [final_path]
+                assert final["model_args"]["use_static_attn_res"] is True
+            else:
+                milestone = torch.load(out_dir / "ckpt_000001.pt", map_location="cpu", weights_only=False)
+                assert {label["series"] for label in milestone["checkpoint_labels"]} == {"words", "tokens"}
             record = json.loads(log_path.read_text().strip())
             assert record["final_iter"] == record["max_iters"] == 2
             assert record["total_tokens"] == 32

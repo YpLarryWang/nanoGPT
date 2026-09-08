@@ -52,6 +52,7 @@ class NanoGPTConfig(PretrainedConfig):
         use_rope=False,
         use_attn_gate=False,
         use_attn_res=False,
+        use_static_attn_res=False,
         attn_res_block_size=2,
         bidirectional=False,
         rope_theta=10000.0,
@@ -71,6 +72,9 @@ class NanoGPTConfig(PretrainedConfig):
         self.swiglu_mult = swiglu_mult
         self.use_rope = use_rope
         self.use_attn_gate = use_attn_gate
+        self.use_static_attn_res = use_static_attn_res
+        if use_static_attn_res and not use_attn_res:
+            raise ValueError("static routing requires use_attn_res=True")
         self.use_attn_res = use_attn_res
         self.attn_res_block_size = attn_res_block_size
         self.bidirectional = bidirectional
@@ -112,6 +116,10 @@ def make_norm(config):
 
 def attn_res_mix(sources, q, norm):
     """Softmax attention over depth; normed keys and raw values, matching nanoGPT."""
+    if norm is None:
+        values = torch.stack(sources, dim=2)
+        weights = q[:len(sources)].softmax(dim=0)
+        return torch.matmul(weights.view(1, 1, 1, -1), values).squeeze(-2)
     values = torch.stack(sources)
     logits = torch.einsum("c,sbtc->sbt", q, norm(values))
     return torch.einsum("sbt,sbtc->btc", logits.softmax(dim=0), values)
@@ -244,10 +252,10 @@ class Block(nn.Module):
         self.use_attn_res = config.use_attn_res
         if config.use_attn_res:
             self.block_start = (2 * layer_idx) % config.attn_res_block_size == 0
-            self.attn_res_q1 = nn.Parameter(torch.zeros(config.n_embd))
-            self.attn_res_norm1 = RMSNorm(config.n_embd)
-            self.attn_res_q2 = nn.Parameter(torch.zeros(config.n_embd))
-            self.attn_res_norm2 = RMSNorm(config.n_embd)
+            self.attn_res_q1 = nn.Parameter(torch.zeros(2 * config.n_layer // config.attn_res_block_size + 1 if config.use_static_attn_res else config.n_embd))
+            self.attn_res_norm1 = None if config.use_static_attn_res else RMSNorm(config.n_embd)
+            self.attn_res_q2 = nn.Parameter(torch.zeros(2 * config.n_layer // config.attn_res_block_size + 1 if config.use_static_attn_res else config.n_embd))
+            self.attn_res_norm2 = None if config.use_static_attn_res else RMSNorm(config.n_embd)
 
     def forward(self, x, attention_mask=None):
         x = x + self.attn(self.ln_1(x), attention_mask)
@@ -287,8 +295,8 @@ def _init_attn_res(model, config):
     size = config.attn_res_block_size
     assert size >= 2 and size % 2 == 0
     assert (2 * config.n_layer) % size == 0
-    model.attn_res_qf = nn.Parameter(torch.zeros(config.n_embd))
-    model.attn_res_normf = RMSNorm(config.n_embd)
+    model.attn_res_qf = nn.Parameter(torch.zeros(2 * config.n_layer // config.attn_res_block_size + 1 if config.use_static_attn_res else config.n_embd))
+    model.attn_res_normf = None if config.use_static_attn_res else RMSNorm(config.n_embd)
 
 
 def _transformer_forward(model, transformer, config, input_ids, attention_mask):

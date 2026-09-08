@@ -24,6 +24,9 @@ from torch.nn import functional as F
 def attn_res_mix(sources, q, norm):
     # [B,T,S,C]，C is still the last dim of RMSNorm
     V = torch.stack(sources, dim=2)
+    if norm is None:  # Static source logits, shared by every token.
+        weights = q[:len(sources)].softmax(dim=0)
+        return torch.matmul(weights.view(1, 1, 1, -1), V).squeeze(-2)
     K = norm(V)
 
     # [B,T,S]，depth S becomes the last dim of softmax
@@ -215,11 +218,11 @@ class Block(nn.Module):
             self.block_start = (2 * layer_idx) % config.attn_res_block_size == 0
             # pre-attn mix and pre-mlp mix need their own query and norm to control the mix, so here we define their module seperately
             # for the pre-attn mix
-            self.attn_res_q1 = nn.Parameter(torch.zeros(config.n_embd)) # init q1 as all zeros
-            self.attn_res_norm1 = RMSNorm(config.n_embd)
+            self.attn_res_q1 = nn.Parameter(torch.zeros(2 * config.n_layer // config.attn_res_block_size + 1 if config.use_static_attn_res else config.n_embd)) # zero logits/queries
+            self.attn_res_norm1 = None if config.use_static_attn_res else RMSNorm(config.n_embd)
             # for the pre-MLP mix
-            self.attn_res_q2 = nn.Parameter(torch.zeros(config.n_embd)) # init q1 as all zeros
-            self.attn_res_norm2 = RMSNorm(config.n_embd)
+            self.attn_res_q2 = nn.Parameter(torch.zeros(2 * config.n_layer // config.attn_res_block_size + 1 if config.use_static_attn_res else config.n_embd)) # zero logits/queries
+            self.attn_res_norm2 = None if config.use_static_attn_res else RMSNorm(config.n_embd)
 
     def forward(self, x, is_causal=True):
         x = x + self.attn(self.ln_1(x), is_causal)
@@ -300,6 +303,7 @@ class GPTConfig:
     use_rope: bool = False
     use_attn_gate: bool = False # Qwen-style elementwise sigmoid gate on the attention output
     use_attn_res: bool = False        # AttnRes (Kimi 2026): softmax attention over depth replaces the residual sum
+    use_static_attn_res: bool = False # learned source logits instead of input-dependent scores
     attn_res_block_size: int = 2      # sublayers per block (attn+mlp = 2); 2 → one block per layer; L32 runs use 8
 
 class GPT(nn.Module):
@@ -309,6 +313,8 @@ class GPT(nn.Module):
         assert config.vocab_size is not None
         assert config.block_size is not None
         self.config = config
+        if config.use_static_attn_res and not config.use_attn_res:
+            raise ValueError("static routing requires use_attn_res=True")
 
         self.transformer = nn.ModuleDict(dict(
             wte = nn.Embedding(config.vocab_size, config.n_embd),
@@ -334,8 +340,8 @@ class GPT(nn.Module):
             assert (2 * config.n_layer) % s == 0, f"2·n_layer={2*config.n_layer} not divisible by {s}"
             # there's another attres after all the blocks is done and right before the lm_head, aggregating all N block representations.
             # `f` means final here, representing the last attres
-            self.attn_res_qf = nn.Parameter(torch.zeros(config.n_embd))
-            self.attn_res_normf = RMSNorm(config.n_embd)
+            self.attn_res_qf = nn.Parameter(torch.zeros(2 * config.n_layer // s + 1 if config.use_static_attn_res else config.n_embd))
+            self.attn_res_normf = None if config.use_static_attn_res else RMSNorm(config.n_embd)
 
         # init all weights
         self.apply(self._init_weights)

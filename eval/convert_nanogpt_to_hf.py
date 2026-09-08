@@ -83,6 +83,7 @@ def main():
         use_rope=margs["use_rope"],
         use_attn_gate=margs.get("use_attn_gate", False),
         use_attn_res=margs.get("use_attn_res", False),
+        use_static_attn_res=margs.get("use_static_attn_res", False),
         attn_res_block_size=margs.get("attn_res_block_size", 2),
         bidirectional=args.bidirectional,
         tie_word_embeddings=True,

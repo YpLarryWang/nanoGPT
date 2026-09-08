@@ -54,6 +54,7 @@ init_from = 'scratch' # 'scratch' or 'resume' or 'gpt2*'
 resume_checkpoint = '' # explicit checkpoint path; legacy resume falls back to out_dir/ckpt.pt
 resume_strict = True # fail closed if a full checkpoint or trajectory-affecting config is incomplete/mismatched
 save_iters = []    # exact iters to archive a separate, weights-only checkpoint
+endpoint_only = False # disable best/latest/milestone writes; preserve exposure tracking and final
 checkpoint_schedule = '' # dual word/token schedule JSON; its iters are unioned with save_iters
 experiment_log_path = 'results/experiments.jsonl'
 # wandb logging
@@ -87,6 +88,7 @@ swiglu_mult=8/3
 use_rope=False
 use_attn_gate=False
 use_attn_res = False
+use_static_attn_res = False
 attn_res_block_size = 2
 
 # adamw optimizer
@@ -323,7 +325,7 @@ else:
 model_args = dict(n_layer=n_layer, n_head=n_head, n_embd=n_embd, 
                   block_size=block_size, bias=bias, 
                   use_rmsnorm=use_rmsnorm, use_swiglu=use_swiglu, swiglu_mult=swiglu_mult, use_rope=use_rope, use_attn_gate=use_attn_gate,
-                  use_attn_res=use_attn_res, attn_res_block_size=attn_res_block_size,
+                  use_attn_res=use_attn_res, use_static_attn_res=use_static_attn_res, attn_res_block_size=attn_res_block_size,
                   vocab_size=None, dropout=dropout) # start with model_args from command line
 
 if init_from == 'scratch':
@@ -364,13 +366,13 @@ elif init_from == 'resume':
         'sampler', 'sampler_seed', 'seed', 'eval_seed',
         'n_layer', 'n_head', 'n_embd', 'dropout', 'bias',
         'use_rmsnorm', 'use_swiglu', 'swiglu_mult', 'use_rope',
-        'use_attn_gate', 'use_attn_res', 'attn_res_block_size',
+        'use_attn_gate', 'use_attn_res', 'use_static_attn_res', 'attn_res_block_size',
         'learning_rate', 'max_iters', 'weight_decay', 'beta1', 'beta2',
         'grad_clip', 'decay_lr', 'warmup_iters', 'lr_decay_iters', 'min_lr',
         'use_muon', 'use_hybrid', 'causal_microsteps',
         'dtype', 'compile', 'eval_interval', 'eval_iters', 'eval_batch_size',
         'eval_only', 'always_save_checkpoint', 'checkpoint_schedule', 'save_iters',
-        'checkpoint_schedule_metadata',
+        'checkpoint_schedule_metadata', 'endpoint_only',
     )
     resume_mismatches = []
     if resume_strict:
@@ -441,7 +443,7 @@ elif init_from == 'resume':
         'use_swiglu', 'swiglu_mult',
         'use_rope',
         'use_attn_gate',
-        'use_attn_res', 'attn_res_block_size',
+        'use_attn_res', 'use_static_attn_res', 'attn_res_block_size',
     ]
     for k in ARCH_KEYS:
         if k in checkpoint_model_args: # must have this condition or old ckpt would trigger KeyError
@@ -787,6 +789,8 @@ def record_checkpoint(path, role, weights_only, checkpoint_exposure, checkpoint_
 # Single place to write a checkpoint. weights_only=True drops optimizer/RNG state
 # from AoA series snapshots. Writes are atomic within the output filesystem.
 def save_checkpoint(path: str, role: str, weights_only: bool = False, extra: dict = None):
+    if endpoint_only and role != 'final':
+        return
     checkpoint_exposure = exposure_at(iter_num)
     checkpoint_labels = labels_at(iter_num)
     ckpt = {
@@ -1025,6 +1029,8 @@ if master_process:  # only rank-0 writes, so a multi-GPU (DDP) run logs one line
         'use_rope': use_rope,
         'use_attn_gate': use_attn_gate,
         'use_attn_res': use_attn_res,
+        'use_static_attn_res': use_static_attn_res,
+        'endpoint_only': endpoint_only,
         'params_M': round(raw_model.get_num_params() / 1e6, 2),
         'batch_size': batch_size,
         'grad_accum': global_gradient_accumulation_steps,
