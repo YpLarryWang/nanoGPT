@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """Detached two-GPU camera-ready queue. Fail closed; preserve logs/artifacts."""
-import concurrent.futures, json, os, subprocess, sys, time, traceback
+import concurrent.futures, json, netrc, os, subprocess, sys, time, traceback
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[2]
 os.chdir(ROOT)
@@ -25,6 +25,11 @@ def paired(fn,a,b):
   for f in futures:f.result()
 def main():
  if STATE.exists():raise RuntimeError('queue already has state; inspect before restarting')
+ if not os.environ.get('WANDB_API_KEY'):
+  credential=netrc.netrc().authenticators('api.wandb.ai')
+  if not credential:raise RuntimeError('W&B login is required')
+  os.environ['WANDB_API_KEY']=credential[2]
+ assert Path('data/babylm_officialdev/camera_ready_data.done').exists()
  state('training',gpu0=[1337,1339],gpu1=[1338])
  paired(train_lane,([1337,1339],0),([1338],1))
  state('priority_evaluation')
