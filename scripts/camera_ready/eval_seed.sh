@@ -16,6 +16,8 @@ PY
 )
 OUT="$NANO/results/camera-ready/$NAME"
 HF="/workspace/hf-models/$NAME"
+EVAL_NAME=${NAME//./p}
+HF_EVAL="/workspace/hf-models/$EVAL_NAME"
 mkdir -p "$OUT"
 # Permit early evaluation on a free GPU without overlapping the main queue.
 exec 8>"$NANO/results/camera-ready/eval-gpu-${GPU}.lock"
@@ -23,8 +25,8 @@ flock 8
 exec 9>"$OUT/${PHASE}.lock"
 flock 9
 if [[ "$PHASE" == priority ]]; then
- if [[ -f "$OUT/priority.done" ]]; then
-  "$PY" - "$OUT" "$EVAL" "$NAME" <<'PY'
+ if [[ -f "$OUT/priority.done" && -s "$EVAL/results/$EVAL_NAME/main/zero_shot/causal/blimp/blimp_filtered/best_temperature_report.txt" ]]; then
+  "$PY" - "$OUT" "$EVAL" "$EVAL_NAME" <<'PY'
 import json,sys
 from pathlib import Path
 sys.path.insert(0, 'eval')
@@ -47,14 +49,16 @@ PY
  if [[ ! -s "$HF/config.json" ]]; then
   "$PY" eval/convert_nanogpt_to_hf.py --ckpt "$CKPT" --tokenizer data/babylm_officialdev/tokenizer/bpe-16000.json --out "$HF"
  fi
+ if [[ ! -e "$HF_EVAL" ]]; then ln -s "$HF" "$HF_EVAL"; fi
  cd "$EVAL"
- "$PY" -m evaluation_pipeline.sentence_zero_shot.run --model_path_or_name "$HF" --backend causal \
+ "$PY" -m evaluation_pipeline.sentence_zero_shot.run --model_path_or_name "$HF_EVAL" --backend causal \
   --task blimp --data_path evaluation_data/full_eval/blimp_filtered --save_predictions --revision_name main
  touch "$OUT/priority.done"
 elif [[ "$PHASE" == remaining ]]; then
+ if [[ ! -e "$HF_EVAL" ]]; then ln -s "$HF" "$HF_EVAL"; fi
  cd "$EVAL"
  for PAIR in blimp:supplement_filtered ewok:ewok_filtered entity_tracking:entity_tracking comps:comps global_piqa_parallel:global_piqa_parallel global_piqa_nonparallel:global_piqa_nonparallel; do
-  "$PY" -m evaluation_pipeline.sentence_zero_shot.run --model_path_or_name "$HF" --backend causal \
+  "$PY" -m evaluation_pipeline.sentence_zero_shot.run --model_path_or_name "$HF_EVAL" --backend causal \
    --task "${PAIR%:*}" --data_path "evaluation_data/full_eval/${PAIR#*:}" --save_predictions --revision_name main
  done
  touch "$OUT/remaining.done"

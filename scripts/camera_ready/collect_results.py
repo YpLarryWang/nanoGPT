@@ -31,7 +31,7 @@ def collect(root, eval_root):
             metrics[f'full_{split}_perplexity'] = data['perplexity']
             row['sources'][f'full_{split}'] = str(path)
         for key, parts in sync.ZERO_REPORTS_FULL.items():
-            path = eval_root / name / 'main/zero_shot/causal' / parts[0] / parts[1] / 'best_temperature_report.txt'
+            path = eval_root / name.replace('.', 'p') / 'main/zero_shot/causal' / parts[0] / parts[1] / 'best_temperature_report.txt'
             if not path.exists():
                 row['missing'].append(key)
                 continue
